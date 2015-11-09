@@ -1,0 +1,38 @@
+#!/usr/bin/env python
+
+import logging
+import argparse
+
+import yaml
+from wade.into import standard_setup
+
+import kv_store
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='WADE server.')
+    parser.add_argument('--id', type=int, required=True,
+                        help='node id')
+    parser.add_argument('--conf', type=str, required=True,
+                        help='cluster config')
+    parser.add_argument('--debug', action='store_true', default=False,
+                        help='debug output')
+
+    args = parser.parse_args()
+    my_id = args.id
+    conf = yaml.load(open(args.conf, 'r').read())['nodes']
+
+    if my_id not in conf:
+        raise Exception("id %d not in node config" % my_id)
+
+    if args.debug:
+        logging.getLogger().setLevel(logging.DEBUG)
+    else:
+        logging.getLogger().setLevel(logging.INFO)
+
+    my_host, my_port = conf[my_id]
+    logging.info("starting wade-kv on port %d", my_port)
+
+    data_store = kv_store.Store()
+    loop = standard_setup(my_id, my_port, data_store)
+    loop.run()

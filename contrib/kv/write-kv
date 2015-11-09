@@ -1,0 +1,56 @@
+#!/usr/bin/env python
+
+import argparse
+
+import yaml
+
+from wade import chorus
+
+
+def run_set(c, args, conf):
+    obj_id = args.obj_id
+    chain = conf['chain_map'][obj_id]
+    return c.reqrep(chain[0],
+             {
+                 'obj_id': obj_id,
+                 'obj_seq': -1,
+                 'op': 'SET',
+                 'args': { 'k': args.k, 'v': args.v },
+                 'debug_tag': 'write-kv/set',
+             })
+
+def run_get(c, args, conf):
+    obj_id = args.obj_id
+    chain = conf['chain_map'][obj_id]
+    return c.reqrep(chain[-1],
+             {
+                 'obj_id': obj_id,
+                 'obj_seq': -1,
+                 'op': 'GET',
+                 'args': { 'k': args.k },
+                 'debug_tag': 'write-kv/set',
+             })
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='kv cli')
+    parser.add_argument('--conf', type=str, required=True,
+                        help='cluster config')
+    cmd_parser = parser.add_subparsers()
+
+    parser_set = cmd_parser.add_parser('set')
+    parser_set.add_argument('obj_id', type=int)
+    parser_set.add_argument('k')
+    parser_set.add_argument('v')
+    parser_set.set_defaults(func=run_set)
+
+    parser_get = cmd_parser.add_parser('get')
+    parser_get.add_argument('obj_id', type=int)
+    parser_get.add_argument('k')
+    parser_get.set_defaults(func=run_get)
+
+    args = parser.parse_args()
+    conf = yaml.load(open(args.conf, 'r').read())
+
+    c = chorus.Client(conf['nodes'])
+    print args.func(c, args, conf)

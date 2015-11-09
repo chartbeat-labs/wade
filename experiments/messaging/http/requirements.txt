@@ -1,0 +1,2 @@
+gevent==1.1b6
+requests==2.8.1

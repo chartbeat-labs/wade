@@ -1,0 +1,37 @@
+#!/usr/bin/env python
+
+import time
+import random
+import argparse
+
+import yaml
+from wade import chorus
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='kv hammer')
+    parser.add_argument('--conf', type=str, required=True,
+                        help='cluster config')
+    parser.add_argument('--num', type=int, required=True,
+                        help='number of writes to run')
+    args = parser.parse_args()
+
+    conf = yaml.load(open(args.conf, 'r').read())
+    c = chorus.Client(conf['nodes'])
+    obj_ids = conf['chain_map'].keys()
+
+    st_time = time.time()
+    for i in xrange(args.num):
+        obj_id = random.choice(obj_ids)
+        c.reqrep(obj_id,
+                 {
+                     'obj_id': obj_id,
+                     'obj_seq': -1,
+                     'op': 'SET',
+                     'args': { 'k': 'foo', 'v': 'bar%d' % i },
+                     'debug_tag': 'hammer-kv',
+                 })
+
+    diff_time = time.time() - st_time
+    print 'wrote %d messages/sec over %d secs' % \
+        ((args.num / diff_time), diff_time)
