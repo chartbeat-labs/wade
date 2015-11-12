@@ -5,7 +5,6 @@ peers.
 
 """
 
-import time
 import socket
 import logging
 from functools import partial
@@ -136,14 +135,7 @@ class CallInterface(object):
 
         self._loop = loop
         self._conf = {}
-
-        self._unique_ish = int(time.time()) % (1 << 16)
         self._req_counter = 0
-
-        # fixme: Callbacks should be on a per-connection basis so that
-        # clients don't have to worry about generating globally unique
-        # request ids. They can just use incrementing counters
-        # instead.
         self._callbacks = {}
 
         self._outgoing = {} # map peer_id -> Outgoing
@@ -170,7 +162,8 @@ class CallInterface(object):
         """
 
         outgoing = self._outgoing[peer_id]
-        req_id = self._generate_unique_req_id()
+        req_id = self._req_counter
+        self._req_counter += 1
         self._callbacks[req_id] = callback
 
         timeout_timer = pyuv.Timer(self._loop)
@@ -282,13 +275,6 @@ class CallInterface(object):
             return
         del self._callbacks[req_id]
         callback(TIMEOUT, None)
-
-    def _generate_unique_req_id(self):
-        """Generates a probably unique string as a request id."""
-
-        req_id = (self._req_counter << 16) + self._unique_ish
-        self._req_counter += 1
-        return req_id % (1 << 64)
 
 
 class Client(object):

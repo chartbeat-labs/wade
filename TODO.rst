@@ -1,9 +1,6 @@
 TODO
 ----
 
-- Make req_id function of connection, so clients don't have to
-  generate unique req_ids.
-
 - Stores should be able to set up periodic functions, to perform
   maintenance such as TTLs and object gc (removing object data on
   nodes that are no longer involved in its chain).
