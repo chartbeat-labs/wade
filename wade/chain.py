@@ -2,6 +2,7 @@
 
 """
 
+import random
 import logging
 import traceback
 from functools import partial
@@ -17,11 +18,12 @@ import chorus
 # it forwards.
 Command = namedtuple('Command',
                      [
-                         'obj_id',    # int, object id
+                         'obj_id',    # hashable type, object id
                          'obj_seq',   # int, sequence for this object
                          'op',        # str, operation for this command
                          'args',      # anything, arguments for op
                          'debug_tag', # prefix string for debug output
+                         'internal',  # True for client requests
                      ])
 
 
@@ -41,6 +43,9 @@ class CallState(object):
             call_peer,
             cmd,
             chain,
+            is_head,
+            is_tail,
+            is_body,
             store,
             logger,
     ):
@@ -53,44 +58,53 @@ class CallState(object):
         self._func = store.get_op(self._cmd.op)
         self._max_seq = store.max_seq
         self._chain = chain
+        self._is_head = is_head
+        self._is_tail = is_tail
+        self._is_body = is_body
 
         self._next_node_id = None
 
         self._logger = logger
 
     def _cmd_prepare(self):
-        """Decide whether or not command needs to be forwarded to a successor."""
+        """Decide whether or not command needs to be forwarded to a
+        successor.
 
-        if self._my_id not in self._chain:
-            self._fail_cont(
-                'node %d not in chain %s' % (self._my_id, self._chain)
-            )
-            return
+        """
 
-        is_tail = self._chain[-1] == self._my_id
-
-        if not is_tail and self._func._op_type == 'query':
-            self._fail_cont(
-                'received query command at non-tail node.'
-            )
-            return
-
-        if is_tail:
-            self._cmd_commit(chorus.OK, None)
+        if self._cmd.internal:
+            should_forward = not self._is_tail
+            if should_forward:
+                chain_pos = self._chain.index(self._my_id)
+                self._next_node_id = self._chain[chain_pos + 1]
+                next_cmd = self._cmd._asdict()
         else:
-            chain_pos = self._chain.index(self._my_id)
-            self._next_node_id = self._chain[chain_pos + 1]
+            should_forward = True
+            if self._func._op_type == 'update':
+                self._next_node_id = self._chain[0]
+            elif self._func._op_type == 'query':
+                self._next_node_id = self._chain[-1]
+            next_cmd = self._cmd._asdict()
+            next_cmd['internal'] = True
+
+        if should_forward:
             self._call_peer(
                 self._next_node_id,
-                self._cmd._asdict(),
+                next_cmd,
                 self._cmd_commit,
                 timeout=1.0,
             )
+        else:
+            self._cmd_commit(chorus.OK, None)
 
     def _cmd_commit(self, status, message):
         if status != chorus.OK:
             self._fail_cont('%d forward to %d failed: %s' % \
                             (self._my_id, self._next_node_id, message))
+            return
+
+        if not self._cmd.internal:
+            self._ok_cont(message)
             return
 
         if self._func._op_type == 'update':
@@ -150,53 +164,112 @@ class Handler(object):
             fail('invalid command: %s' % raw_cmd)
             return
 
-        special_op = self._special_ops.get(cmd.op)
-        if special_op:
-            special_op(cmd, resp, fail)
+        special_func = self._special_ops.get(cmd.op)
+        if special_func:
+            special_func(cmd, resp, fail)
             return
-        else:
-            chain = self._chain_map.get(cmd.obj_id)
-            if not chain:
-                fail('no chain for obj %s' % cmd.obj_id)
+
+        func = self._store.get_op(cmd.op)
+        if not func:
+            fail('no function defined for op: %s' % cmd.op)
+            return
+
+        chain = self._chain_map.get(cmd.obj_id)
+        if not chain:
+            fail('no chain for obj %s' % cmd.obj_id)
+            return
+
+        in_chain = self._my_id in chain
+        is_head = chain[0] == self._my_id
+        is_tail = chain[-1] == self._my_id
+        is_body = in_chain and not (is_head or is_tail)
+        obj_seq_assigned = cmd.obj_seq != -1
+
+        # Optimization: We can convert an external update at the head
+        # to internal. Similarly, we can convert an external query at
+        # the tail to internal.
+        if not cmd.internal:
+            if (func._op_type == 'update' and is_head) or \
+               (func._op_type == 'query' and is_tail):
+                cmd = cmd._replace(internal=True)
+
+        if cmd.internal:
+            if not in_chain:
+                fail('misplaced internal forward, obj_id %s, chain: %s' % \
+                     (cmd.obj_id, chain))
                 return
-            cmd = self._add_obj_seq_if_necessary(cmd, chain)
+            if func._op_type == 'update':
+                # If we're the head and this is a brand new update
+                # command, we haven't yet set the obj_seq. If we're
+                # not at the head then we expect the obj_seq to have
+                # been set.
+                if is_head and obj_seq_assigned:
+                    fail('update at head already assigned seq, obj_id %s, chain: %s' % \
+                         (cmd.obj_id, chain))
+                    return
+                if not is_head and not obj_seq_assigned:
+                    fail('update command not at head, obj_id %s, chain: %s' % \
+                         (cmd.obj_id, chain))
+                    return
 
-            self._logger.debug("CMD %s", cmd)
+            if func._op_type == 'query' and not is_tail:
+                fail('query command not at tail, obj_id %s, chain: %s' % \
+                     (cmd.obj_id, chain))
+                return
 
-            # fixme: need to also reject commands with sequences less
-            # than the max in the pending set
+            if is_head:
+                cmd = self._add_obj_seq(cmd, chain)
+
+            # fixme: need to also reject commands with sequences
+            # less than the max in the pending set
             if (cmd.obj_id, cmd.obj_seq) in self._pending:
                 fail('request %d:%d already exists' % (cmd.obj_id, cmd.obj_seq))
                 return
 
             self._pending[(cmd.obj_id, cmd.obj_seq)] = cmd
 
-            state = CallState(
-                self._my_id,
-                partial(self._handle_ok, resp, cmd),
-                partial(self._handle_fail, fail, cmd),
-                call_peer,
-                cmd,
-                chain,
-                self._store,
-                self._logger,
-            )
-            state._cmd_prepare()
+        if not cmd.internal:
+            placement = 'FORWARD'
+        elif is_head:
+            placement = 'HEAD'
+        elif is_tail:
+            placement = 'TAIL'
+        elif is_body:
+            placement = 'BODY'
+        else:
+            # Should never happen. The 'cmd.internal and not in_chain'
+            # check above should make this a logical impossibility,
+            # unless something else is fubar'd.
+            placement = 'ERROR'
+        self._logger.debug("CMD %s %s", placement, cmd)
 
-    def _add_obj_seq_if_necessary(self, cmd, chain):
+        state = CallState(
+            self._my_id,
+            partial(self._handle_ok, resp, cmd),
+            partial(self._handle_fail, fail, cmd),
+            call_peer,
+            cmd,
+            chain,
+            is_head,
+            is_tail,
+            is_body,
+            self._store,
+            self._logger,
+        )
+        state._cmd_prepare()
+
+    def _add_obj_seq(self, cmd, chain):
         """Returns a Command with an obj_seq if this is the head."""
 
-        is_head = chain[0] == self._my_id
-        if is_head:
-            max_seq = self._seq_map.get(cmd.obj_id) or self._max_seq(cmd.obj_id)
-            obj_seq = max_seq + 1
-            self._seq_map[cmd.obj_id] = obj_seq
-            cmd = cmd._replace(obj_seq=obj_seq)
+        max_seq = self._seq_map.get(cmd.obj_id) or self._max_seq(cmd.obj_id)
+        obj_seq = max_seq + 1
+        self._seq_map[cmd.obj_id] = obj_seq
+        cmd = cmd._replace(obj_seq=obj_seq)
 
         return cmd
 
     def _handle_ok(self, resp, cmd, ret):
-        del self._pending[(cmd.obj_id, cmd.obj_seq)]
+        self._pending.pop((cmd.obj_id, cmd.obj_seq), None)
         resp(ret)
 
     def _handle_fail(self, fail, cmd, error):
@@ -283,3 +356,51 @@ class Store(object):
             return func
         else:
             return None
+
+
+class Client(object):
+    """Chain client.
+
+    Use to communicate with chain nodes.
+
+    """
+
+    def __init__(self, chorus_client):
+        self._chorus_client = chorus_client
+        self._peer_ids = self._chorus_client.get_peer_ids()
+
+    def reqrep(self, op_name, obj_id, args, debug_tag):
+        # see TODO.rst about better selecting a peer.
+        return self._chorus_client.reqrep(
+            random.choice(self._peer_ids),
+            {
+                'obj_id': obj_id,
+                'obj_seq': -1,
+                'op': op_name,
+                'args': args,
+                'debug_tag': debug_tag,
+                'internal': False,
+            },
+        )
+
+    def special_op(self, peer_id, op_name, args, tag):
+        """Sends a special op to the peer, or to all peers if peer_id is
+        None.
+
+        """
+
+        if peer_id is None:
+            peer_ids = self._peer_ids
+        else:
+            peer_ids = [peer_id]
+
+        return { peer_id: self._chorus_client.reqrep(peer_id,
+                                                     {
+                                                         'obj_id': None,
+                                                         'obj_seq': None,
+                                                         'op': op_name,
+                                                         'args': args,
+                                                         'debug_tag': tag,
+                                                         'internal': False,
+                                                     })
+                 for peer_id in peer_ids }

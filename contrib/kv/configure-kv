@@ -4,6 +4,7 @@ import argparse
 
 import yaml
 
+from wade import chain
 from wade import chorus
 
 
@@ -16,13 +17,5 @@ if __name__ == '__main__':
     conf = yaml.load(open(args.conf, 'r').read())
 
     nodes = conf['nodes']
-    c = chorus.Client(nodes)
-    for node_id in nodes.keys():
-        print node_id, c.reqrep(node_id,
-                                {
-                                    'obj_id': None,
-                                    'obj_seq': None,
-                                    'op': '.RELOAD_CONF',
-                                    'args': { 'conf': conf },
-                                    'debug_tag': 'configure-kv',
-                                })
+    c = chain.Client(chorus.Client(nodes))
+    print c.special_op(None, '.RELOAD_CONF', { 'conf': conf }, 'configure-kv')

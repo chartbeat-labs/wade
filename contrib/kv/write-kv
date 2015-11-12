@@ -4,32 +4,17 @@ import argparse
 
 import yaml
 
+from wade import chain
 from wade import chorus
 
 
 def run_set(c, args, conf):
     obj_id = args.obj_id
-    chain = conf['chain_map'][obj_id]
-    return c.reqrep(chain[0],
-             {
-                 'obj_id': obj_id,
-                 'obj_seq': -1,
-                 'op': 'SET',
-                 'args': { 'k': args.k, 'v': args.v },
-                 'debug_tag': 'write-kv/set',
-             })
+    return c.reqrep('SET', obj_id, { 'k': args.k, 'v': args.v }, 'write-kv/set')
 
 def run_get(c, args, conf):
     obj_id = args.obj_id
-    chain = conf['chain_map'][obj_id]
-    return c.reqrep(chain[-1],
-             {
-                 'obj_id': obj_id,
-                 'obj_seq': -1,
-                 'op': 'GET',
-                 'args': { 'k': args.k },
-                 'debug_tag': 'write-kv/set',
-             })
+    return c.reqrep('GET', obj_id, { 'k': args.k }, 'write-kv/get')
 
 
 if __name__ == '__main__':
@@ -52,5 +37,6 @@ if __name__ == '__main__':
     args = parser.parse_args()
     conf = yaml.load(open(args.conf, 'r').read())
 
-    c = chorus.Client(conf['nodes'])
-    print args.func(c, args, conf)
+    chorus_client = chorus.Client(conf['nodes'])
+    chain_client = chain.Client(chorus_client)
+    print args.func(chain_client, args, conf)

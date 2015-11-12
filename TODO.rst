@@ -36,6 +36,9 @@ TODO
 - Make synchronous client (reqrep) threadsafe. This is probably the
   single most important thing affecting performance.
 
+- Chain clients randomly select peers they use for reqrep. We should
+  take load or request time into effect (two choice).
+
 - Are there msgpack message limits? Full-sync and serialization seems
   potentially rough.
 
@@ -48,7 +51,8 @@ TODO
 - Nodes are configured to timeout their forwards after 1 second. How
   should we make this configurable?
 
-- Error handling overall needs to be carefully thought out.
+- Error handling overall needs to be carefully thought out. Debug
+  messages too (outputting obj_id and chain would be helpful).
 
 - pypy support. pyuv doesn't support pypy out of the box at the
   moment, but it's coming soon.

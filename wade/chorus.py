@@ -312,6 +312,9 @@ class Client(object):
             except msgpack.OutOfData:
                 pass
 
+    def get_peer_ids(self):
+        return self._conf.keys()
+
     def _ensure_connection(self, peer_id):
         if peer_id in self._peers:
             return

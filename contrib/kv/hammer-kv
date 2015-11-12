@@ -5,6 +5,7 @@ import random
 import argparse
 
 import yaml
+from wade import chain
 from wade import chorus
 
 
@@ -17,20 +18,13 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     conf = yaml.load(open(args.conf, 'r').read())
-    c = chorus.Client(conf['nodes'])
+    c = chain.Client(chorus.Client(conf['nodes']))
     obj_ids = conf['chain_map'].keys()
 
     st_time = time.time()
     for i in xrange(args.num):
-        obj_id = random.choice(obj_ids)
-        c.reqrep(obj_id,
-                 {
-                     'obj_id': obj_id,
-                     'obj_seq': -1,
-                     'op': 'SET',
-                     'args': { 'k': 'foo', 'v': 'bar%d' % i },
-                     'debug_tag': 'hammer-kv',
-                 })
+        obj_id = obj_ids[i % len(obj_ids)]
+        c.reqrep('SET', obj_id, { 'k': 'foo', 'v': 'bar%d' % i }, 'hammer-kv')
 
     diff_time = time.time() - st_time
     print 'wrote %d messages/sec over %d secs' % \
