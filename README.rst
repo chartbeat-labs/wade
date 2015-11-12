@@ -305,6 +305,8 @@ work.
 This repo contains a Vagrantfile which will bring up a development
 environment with the necessary Python packages.
 
+This repo also contains sample databases in the ``contrib`` directory.
+
 
 Things To Understand
 --------------------
