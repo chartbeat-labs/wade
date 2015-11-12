@@ -19,9 +19,20 @@ def standard_setup(my_id, port, store):
     """
 
     loop = pyuv.Loop()
-
     call_interface = CallInterface(loop)
     handler = chain.Handler(my_id, store, call_interface)
+
+    return node_setup(port, handler, call_interface, loop)
+
+
+def node_setup(port, handler, call_interface=None, loop=None):
+    """Starts up just the chorus communication handler."""
+
+    if not loop:
+        loop = pyuv.Loop()
+    if not call_interface:
+        call_interface = CallInterface(loop)
+
     node = Node(loop, port, call_interface, handler)
 
     signal_stop = pyuv.Signal(loop)
@@ -29,8 +40,8 @@ def standard_setup(my_id, port, store):
         partial(_unwind_loop, [call_interface, node], signal_stop),
         signal.SIGINT,
     )
-
     return loop
+
 
 def _unwind_loop(registrants, signal_stop, handle, signum):
     """Signal callback that unwinds the given registrants loop hooks."""

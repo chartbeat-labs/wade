@@ -1,7 +1,7 @@
 
 import time
 
-from wade.chorus import Node
+from wade.into import node_setup
 
 
 class CallHandler(object):
@@ -16,9 +16,9 @@ class CallHandler(object):
             self._st_time = right_now
             self._count = 0
 
-        resp('pong')
+        resp(message)
         self._count += 1
 
 
 if __name__ == '__main__':
-    Node.start_standalone(0, { 0: ['localhost', 12345] }, CallHandler())
+    node_setup(12345, CallHandler()).run()

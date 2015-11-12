@@ -1,4 +1,6 @@
 
+import uuid
+
 from wade.chorus import Client
 
 if __name__ == '__main__':
@@ -8,4 +10,7 @@ if __name__ == '__main__':
 
     num = 100000
     for i in xrange(num):
-        c.reqrep(0, b'ping')
+        message = uuid.uuid1(clock_seq=i).hex
+        status, resp = c.reqrep(0, message)
+        if resp != message:
+            raise Exception("bad response %s != %s" % (resp, message))
