@@ -80,9 +80,9 @@ class CallState(object):
                 next_cmd = self._cmd._asdict()
         else:
             should_forward = True
-            if self._func._op_type == 'update':
+            if self._func._op_type == UPDATE_OP:
                 self._next_node_id = self._chain[0]
-            elif self._func._op_type == 'query':
+            elif self._func._op_type == QUERY_OP:
                 self._next_node_id = self._chain[-1]
             next_cmd = self._cmd._asdict()
             next_cmd['internal'] = True
@@ -107,7 +107,7 @@ class CallState(object):
             self._ok_cont(message)
             return
 
-        if self._func._op_type == 'update':
+        if self._func._op_type == UPDATE_OP:
             cur_seq = self._max_seq(self._cmd.obj_id)
             if self._cmd.obj_seq != cur_seq + 1:
                 self._fail_cont(
@@ -189,8 +189,8 @@ class Handler(object):
         # to internal. Similarly, we can convert an external query at
         # the tail to internal.
         if not cmd.internal:
-            if (func._op_type == 'update' and is_head) or \
-               (func._op_type == 'query' and is_tail):
+            if (func._op_type == UPDATE_OP and is_head) or \
+               (func._op_type == QUERY_OP and is_tail):
                 cmd = cmd._replace(internal=True)
 
         if cmd.internal:
@@ -198,7 +198,7 @@ class Handler(object):
                 fail('misplaced internal forward, obj_id %s, chain: %s' % \
                      (cmd.obj_id, chain))
                 return
-            if func._op_type == 'update':
+            if func._op_type == UPDATE_OP:
                 # If we're the head and this is a brand new update
                 # command, we haven't yet set the obj_seq. If we're
                 # not at the head then we expect the obj_seq to have
@@ -212,7 +212,7 @@ class Handler(object):
                          (cmd.obj_id, chain))
                     return
 
-            if func._op_type == 'query' and not is_tail:
+            if func._op_type == QUERY_OP and not is_tail:
                 fail('query command not at tail, obj_id %s, chain: %s' % \
                      (cmd.obj_id, chain))
                 return
@@ -301,10 +301,13 @@ class ReloadConfOp(object):
         resp('OK')
 
 
+UPDATE_OP = 1
+QUERY_OP = 2
+
 def update_op(func):
     """Update (mutating) op."""
 
-    func._op_type = 'update'
+    func._op_type = UPDATE_OP
     func._op_name = func.__name__
 
     return func
@@ -312,7 +315,7 @@ def update_op(func):
 def query_op(func):
     """Query (non-mutating) op."""
 
-    func._op_type = 'query'
+    func._op_type = QUERY_OP
     func._op_name = func.__name__
 
     return func
