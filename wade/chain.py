@@ -157,7 +157,9 @@ class Handler(object):
             '.RELOAD_CONF': ReloadConfOp(self, call_interface, self._logger),
         }
 
-    def __call__(self, resp, fail, call_peer, raw_cmd):
+    def __call__(self, resp, call_peer, raw_cmd):
+        fail = partial(resp, chorus.ERR)
+
         try:
             cmd = Command(**raw_cmd)
         except TypeError:
@@ -166,7 +168,7 @@ class Handler(object):
 
         special_func = self._special_ops.get(cmd.op)
         if special_func:
-            special_func(cmd, resp, fail)
+            special_func(cmd, resp)
             return
 
         func = self._store.get_op(cmd.op)
@@ -198,6 +200,7 @@ class Handler(object):
                 fail('misplaced internal forward, obj_id %s, chain: %s' % \
                      (cmd.obj_id, chain))
                 return
+
             if func._op_type == UPDATE_OP:
                 # If we're the head and this is a brand new update
                 # command, we haven't yet set the obj_seq. If we're
@@ -211,6 +214,11 @@ class Handler(object):
                     fail('update command not at head, obj_id %s, chain: %s' % \
                          (cmd.obj_id, chain))
                     return
+
+                # So to recap the logic from the above two if
+                # statements. Once we get here, we are either: the
+                # head and there is no assigned obj seq OR *not* the
+                # head and there *is* an assigned obj seq.
 
             if func._op_type == QUERY_OP and not is_tail:
                 fail('query command not at tail, obj_id %s, chain: %s' % \
@@ -246,7 +254,7 @@ class Handler(object):
         state = CallState(
             self._my_id,
             partial(self._handle_ok, resp, cmd),
-            partial(self._handle_fail, fail, cmd),
+            partial(self._handle_fail, resp, cmd),
             call_peer,
             cmd,
             chain,
@@ -270,12 +278,12 @@ class Handler(object):
 
     def _handle_ok(self, resp, cmd, ret):
         self._pending.pop((cmd.obj_id, cmd.obj_seq), None)
-        resp(ret)
+        resp(chorus.OK, ret)
 
-    def _handle_fail(self, fail, cmd, error):
+    def _handle_fail(self, resp, cmd, error):
         debug_msg = '%s -- %s' % (cmd.debug_tag, error)
         self._logger.error(debug_msg)
-        fail(error)
+        resp(chorus.ERR, error)
 
     def set_conf(self, conf):
         self._conf = conf
@@ -288,17 +296,17 @@ class ReloadConfOp(object):
         self._call_interface = call_interface
         self._logger = logger
 
-    def __call__(self, cmd, resp, fail):
+    def __call__(self, cmd, resp):
         conf = cmd.args.get('conf')
         if not conf:
             self._logger.error('error loading config')
-            fail('unable to set empty config')
+            resp(chorus.ERR, 'unable to set empty config')
             return
 
         self._logger.warn('loading config version %s' % conf['version'])
         self._call_interface.load_conf(conf['nodes'])
         self._handler.set_conf(conf)
-        resp('OK')
+        resp(chorus.OK, 'OK')
 
 
 UPDATE_OP = 1
@@ -372,18 +380,36 @@ class Client(object):
         self._chorus_client = chorus_client
         self._peer_ids = self._chorus_client.get_peer_ids()
 
-    def reqrep(self, op_name, obj_id, args, debug_tag):
+    def call(self, op_name, obj_id, args, debug_tag):
+        """Sends command to cluster."""
+
+        return self.multi_call(
+            [(op_name, obj_id, args)],
+             debug_tag,
+        )[0]
+
+    def multi_call(self, commands, debug_tag):
+        """Batch send commands to cluster.
+
+        Commands are a list of (op_name, obj_id, args) tuples.
+
+        """
+
         # see TODO.rst about better selecting a peer.
-        return self._chorus_client.reqrep(
-            random.choice(self._peer_ids),
-            {
-                'obj_id': obj_id,
-                'obj_seq': -1,
-                'op': op_name,
-                'args': args,
-                'debug_tag': debug_tag,
-                'internal': False,
-            },
+        peer_id = random.choice(self._peer_ids)
+
+        return self._chorus_client.multi_reqrep(
+            peer_id,
+            [
+                {
+                    'obj_id': obj_id,
+                    'obj_seq': -1,
+                    'op': op_name,
+                    'args': args,
+                    'debug_tag': debug_tag,
+                    'internal': False,
+                } for op_name, obj_id, args in commands
+            ],
         )
 
     def special_op(self, peer_id, op_name, args, tag):
@@ -397,13 +423,15 @@ class Client(object):
         else:
             peer_ids = [peer_id]
 
-        return { peer_id: self._chorus_client.reqrep(peer_id,
-                                                     {
-                                                         'obj_id': None,
-                                                         'obj_seq': None,
-                                                         'op': op_name,
-                                                         'args': args,
-                                                         'debug_tag': tag,
-                                                         'internal': False,
-                                                     })
+        return { peer_id:
+                 self._chorus_client.reqrep(
+                     peer_id,
+                     {
+                         'obj_id': None,
+                         'obj_seq': None,
+                         'op': op_name,
+                         'args': args,
+                         'debug_tag': tag,
+                         'internal': False,
+                     })
                  for peer_id in peer_ids }

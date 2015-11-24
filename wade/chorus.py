@@ -9,6 +9,7 @@ import socket
 import logging
 from functools import partial
 from collections import namedtuple
+from recordclass import recordclass
 
 import pyuv
 import msgpack
@@ -21,6 +22,12 @@ TIMEOUT = 'timeout'
 
 class NodeError(Exception):
     pass
+
+# Represents an incoming connection.
+Incoming = recordclass(
+    'Incoming',
+    ['packer', 'unpacker'],
+)
 
 class Node(object):
     """Node is a partipant in the cluster.
@@ -69,7 +76,10 @@ class Node(object):
 
         client = pyuv.TCP(self._loop)
         server.accept(client)
-        self._incoming[client] = (msgpack.Packer(), msgpack.Unpacker())
+        self._incoming[client] = Incoming(
+            msgpack.Packer(autoreset=False),
+            msgpack.Unpacker(),
+        )
         client.start_read(self._incoming_read)
 
     def _incoming_read(self, client, data, error):
@@ -83,39 +93,69 @@ class Node(object):
             del self._incoming[client]
             return
 
-        packer, unpacker = self._incoming[client]
-        unpacker.feed(data)
-        for payload in unpacker:
-            req_id, message = payload
+        incoming = self._incoming[client]
+        incoming.unpacker.feed(data)
+        requests = list(incoming.unpacker)
+        request_ids = [req_id for req_id, message in requests]
+        responses = {}
+
+        for r in requests:
+            req_id, message = r
             self._call_handler(
-                self._make_responder(client, req_id),
-                self._make_failer(client, req_id),
+                partial(self._queue_response,
+                        client, request_ids, responses, req_id),
                 self._call_interface.queue_call,
                 message,
             )
 
+    def _queue_response(
+            self,
+            resp_address,
+            request_ids,
+            responses,
+            req_id,
+            status,
+            message):
+        """Queues a response to a incoming batch request.
 
-    def _queue_resp(self, resp_address, req_id, status, message):
-        """Queues a response to an incoming request.
+        Call handlers supply the status and message arguments to this
+        function. The other arguments are bound by _incoming_read.
+        Typically the last thing a call handler does is call:
 
-        This should typically be the last thing a call_handler does,
-        via the resp callback. Or it doesn't have to do it at all if
-        it's a fire-and-forget command.
+          resp(chorus.OK, 'my-return-value')
+
+        Where resp is the partially applied version of
+        _queue_response.
+
+        When _queue_response notices that it has all the responses it
+        needs, it msgpacks it and sends it back to the client.
 
         """
 
-        packer, unpacker = self._incoming[resp_address]
-        resp_address.write(packer.pack([req_id, status, message]))
+        if req_id in responses:
+            # fixme: handle error
+            return
 
-    def _make_responder(self, resp_address, req_id):
-        """Builds a continuation response for a successful call."""
+        responses[req_id] = (status, message)
 
-        return partial(self._queue_resp, resp_address, req_id, OK)
+        if len(request_ids) != len(responses):
+            return
 
-    def _make_failer(self, resp_address, req_id):
-        """Builds a continuation response for a failed call."""
+        if sorted(request_ids) != sorted(responses.keys()):
+            # fixme: handle error
+            return
 
-        return partial(self._queue_resp, resp_address, req_id, ERR)
+        incoming = self._incoming.get(resp_address)
+        if not incoming:
+            return
+
+        for req_id in request_ids:
+            status, message = responses[req_id]
+            incoming.packer.pack([req_id, status, message])
+        data = incoming.packer.bytes()
+        incoming.packer.reset()
+
+        resp_address.write(data)
 
 
 # Represents an outgoing connection.
@@ -291,26 +331,53 @@ class Client(object):
         self._conf = conf
         self._req_count = 0
         self._peers = {}
-        self._packer = msgpack.Packer()
+        self._packer = msgpack.Packer(autoreset=False)
         self._unpacker = msgpack.Unpacker()
 
     def reqrep(self, peer_id, message):
         """Simulates a reqrep call pattern."""
 
+        return self.multi_reqrep(peer_id, [message])[0]
+
+    def multi_reqrep(self, peer_id, messages):
+        """Simulates a batch reqrep call pattern.
+
+        Sends a batch of messages at once to a peer and waits for them
+        all to return. Returns a corresponding list of responses.
+
+        """
+
         self._ensure_connection(peer_id)
 
-        req_id = self._req_count
-        self._req_count += 1
+        entries = dict(enumerate(messages, start=self._req_count))
+        self._req_count += len(messages)
 
+        # we send the messages out in the same order they're
+        # specified
+        for req_id, m in sorted(entries.items()):
+            self._packer.pack([req_id, m])
         peer = self._peers[peer_id]
-        peer.sendall(self._packer.pack([req_id, message]))
-        while True:
-            self._unpacker.feed(peer.recv(1024))
-            try:
-                req_id, status, message = self._unpacker.unpack()
-                return status, message
-            except msgpack.OutOfData:
-                pass
+        peer.sendall(self._packer.bytes())
+        self._packer.reset()
+
+        # accumulate results and delete from entries as we hear back
+        results = {}
+        while entries:
+            # NB: There is no timeout, so this could potentially hang
+            # forever. For example, if the remote end never responds
+            # to (or we lose) some req_id. fixme!
+
+            data = peer.recv(65536)
+            self._unpacker.feed(data)
+            while True:
+                try:
+                    req_id, status, message = self._unpacker.unpack()
+                    results[req_id] = (status, message)
+                    del entries[req_id] # fixme: handle error
+                except msgpack.OutOfData:
+                    break
+
+        return [m for _, m in sorted(results.items())]
 
     def get_peer_ids(self):
         return self._conf.keys()
