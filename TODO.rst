@@ -13,7 +13,7 @@ TODO
   Timer object lives on even if the call completes. I'm guessing
   that's horrendously bad and needs a good fixing.
 
-- Implement coordinator framework. See "chain configuration" below.
+- Implement overlord framework. See "chain configuration" below.
 
 - Chain clients randomly select peers they use for reqrep. We should
   take load or request time into effect (two choice).
@@ -29,8 +29,8 @@ TODO
 
 - Nodes are configured to timeout their forwards after 1 second. How
   should we make this configurable? Perhaps there should be a
-  cluster-wide "node unresponsive" timeout that both the coordinator
-  and nodes use.
+  cluster-wide "node unresponsive" timeout that both the overlord and
+  nodes use.
 
 - Error handling overall needs to be carefully thought out. Debug
   messages too (outputting obj_id and chain would be helpful).

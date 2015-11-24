@@ -79,20 +79,21 @@ could perform some computation, such as SIZE, which returns the number
 of key-value pairs in its object.
 
 
-Coordinator
------------
+Overlord
+--------
 
-A coordinator node manages the chain and peer configuration. How the
-coordinator works is completely unspecified at the moment, except that
+A overlord node manages the chain and peer configuration. How the
+overlord works is completely unspecified at the moment, except that
 nodes implement a command to set their configuration. The expectation
-is that the coordinator will take configuration from ZooKeeper or
+is that the overlord will take configuration from ZooKeeper or
 Puppet/Chef/etc, and apply those changes to the nodes. Thus, the
-coordinator detects node failures and adjust chains correctly with
-some expediency. A chain is unavailable for writes if any of its nodes
-are down.
+overlord detects node failures and adjust chains correctly with some
+expediency. A chain is unavailable for writes if any of its nodes are
+down.
 
-For redundancy, there will be multiple coordinators which compete for
-a global lock in ZooKeeper.
+Overlord redundancy is outside the scope of WADE. The expectation is
+that the operator will use ZooKeeper, Consul, or some cluster
+configurator to ensure that there always exists an overlord process.
 
 
 Chain Replication
@@ -144,7 +145,7 @@ between.
 WADE takes a simpler unified approach. Any failure of a node in the
 chain results in update commands on their way in accumulating in
 pending sets until the first stopped node. On recongizing a failed
-node, the coordinator reorganizes the chain by removing teh dead node,
+node, the overlord reorganizes the chain by removing the dead node,
 and tells the head to send a fast-sync command.
 
 First, the fast-sync causes the head to stop accepting update commands.
@@ -247,6 +248,17 @@ Special Ops
   to query commands).
 
 - Read-pause (causes head and tail to drop requests).
+
+
+Clients
+-------
+
+Clients can connect to any node in the cluster, and can send any node
+commands. The node a client connects to acts a coordinator for
+forwarding the command to the appropriate chain head.
+
+Distributing the configuration for clients is outside the scope of
+WADE.
 
 
 Performance Measurements
