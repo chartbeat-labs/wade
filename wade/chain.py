@@ -220,13 +220,13 @@ class Handler(object):
                 # head and there is no assigned obj seq OR *not* the
                 # head and there *is* an assigned obj seq.
 
+                if is_head:
+                    cmd = self._add_obj_seq(cmd, chain)
+
             if func._op_type == QUERY_OP and not is_tail:
                 fail('query command not at tail, obj_id %s, chain: %s' % \
                      (cmd.obj_id, chain))
                 return
-
-            if is_head:
-                cmd = self._add_obj_seq(cmd, chain)
 
             # fixme: need to also reject commands with sequences
             # less than the max in the pending set
