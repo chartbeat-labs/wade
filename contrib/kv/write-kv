@@ -9,11 +9,11 @@ from wade import chain
 
 def run_set(c, args, conf):
     obj_id = args.obj_id
-    return c.call('SET', obj_id, { 'k': args.k, 'v': args.v }, 'write-kv/set')
+    return c.update('SET', obj_id, { 'k': args.k, 'v': args.v }, 'write-kv/set')
 
 def run_get(c, args, conf):
     obj_id = args.obj_id
-    return c.call('GET', obj_id, { 'k': args.k }, 'write-kv/get')
+    return c.query('GET', obj_id, { 'k': args.k }, 'write-kv/get')
 
 
 if __name__ == '__main__':

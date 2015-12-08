@@ -23,7 +23,7 @@ if __name__ == '__main__':
     st_time = time.time()
     for i in xrange(args.num):
         obj_id = obj_ids[i % len(obj_ids)]
-        c.call('SET', obj_id, { 'k': 'foo', 'v': 'bar%d' % i }, 'hammer-kv')
+        c.update('SET', obj_id, { 'k': 'foo', 'v': 'bar%d' % i }, 'hammer-kv')
 
     diff_time = time.time() - st_time
     print 'wrote %d messages/sec over %d secs' % \
