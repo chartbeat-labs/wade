@@ -317,6 +317,10 @@ class CallInterface(object):
         callback(TIMEOUT, None)
 
 
+class ClientError(Exception):
+    pass
+
+
 class Client(object):
     """Synchronous client implementation.
 
@@ -331,56 +335,31 @@ class Client(object):
         self._conf = conf
         self._req_count = 0
         self._peers = {}
-        self._packer = msgpack.Packer(autoreset=False)
+        self._packer = msgpack.Packer()
         self._unpacker = msgpack.Unpacker()
 
     def reqrep(self, peer_id, message):
         """Simulates a reqrep call pattern."""
 
-        return self.multi_reqrep(peer_id, [message])[0]
-
-    def multi_reqrep(self, peer_id, messages):
-        """Simulates a batch reqrep call pattern.
-
-        Sends a batch of messages at once to a peer and waits for them
-        all to return. Returns a corresponding list of responses.
-
-        """
-
         self._ensure_connection(peer_id)
 
-        entries = dict(enumerate(messages, start=self._req_count))
-        self._req_count += len(messages)
-
-        # we send the messages out in the same order they're
-        # specified
-        for req_id, m in sorted(entries.items()):
-            self._packer.pack([req_id, m])
+        data = [self._req_count, message]
+        self._req_count += 1
         peer = self._peers[peer_id]
-        peer.sendall(self._packer.bytes())
-        self._packer.reset()
+        peer.sendall(self._packer.pack(data))
 
-        # accumulate results and delete from entries as we hear back
-        results = {}
-        while entries:
-            # NB: There is no timeout, so this could potentially hang
-            # forever. For example, if the remote end never responds
-            # to (or we lose) some req_id. fixme!
-
+        while True:
             data = peer.recv(65536)
+            if not data:
+                raise ClientError("fetch from peer %d failed" % peer_id)
+
             self._unpacker.feed(data)
-            while True:
-                try:
-                    req_id, status, message = self._unpacker.unpack()
-                    results[req_id] = (status, message)
-                    del entries[req_id] # fixme: handle error
-                except msgpack.OutOfData:
-                    break
+            try:
+                req_id, status, message = self._unpacker.unpack()
+            except msgpack.OutOfData:
+                continue
 
-        return [m for _, m in sorted(results.items())]
-
-    def get_peer_ids(self):
-        return self._conf.keys()
+            return status, message
 
     def _ensure_connection(self, peer_id):
         if peer_id in self._peers:

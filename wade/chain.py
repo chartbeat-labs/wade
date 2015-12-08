@@ -376,40 +376,25 @@ class Client(object):
 
     """
 
-    def __init__(self, chorus_client):
-        self._chorus_client = chorus_client
-        self._peer_ids = self._chorus_client.get_peer_ids()
+    def __init__(self, conf):
+        self._conf = conf
+        self._chorus_client = chorus.Client(self._conf['nodes'])
+        self._peer_ids = self._conf['nodes'].keys()
 
     def call(self, op_name, obj_id, args, debug_tag):
         """Sends command to cluster."""
 
-        return self.multi_call(
-            [(op_name, obj_id, args)],
-             debug_tag,
-        )[0]
-
-    def multi_call(self, commands, debug_tag):
-        """Batch send commands to cluster.
-
-        Commands are a list of (op_name, obj_id, args) tuples.
-
-        """
-
-        # see TODO.rst about better selecting a peer.
-        peer_id = random.choice(self._peer_ids)
-
-        return self._chorus_client.multi_reqrep(
+        peer_id = self._conf['chain_map'][obj_id][0]
+        return self._chorus_client.reqrep(
             peer_id,
-            [
-                {
-                    'obj_id': obj_id,
-                    'obj_seq': -1,
-                    'op': op_name,
-                    'args': args,
-                    'debug_tag': debug_tag,
-                    'internal': False,
-                } for op_name, obj_id, args in commands
-            ],
+            {
+                'obj_id': obj_id,
+                'obj_seq': -1,
+                'op': op_name,
+                'args': args,
+                'debug_tag': debug_tag,
+                'internal': False,
+            },
         )
 
     def special_op(self, peer_id, op_name, args, tag):

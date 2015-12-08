@@ -6,7 +6,6 @@ import argparse
 
 import yaml
 from wade import chain
-from wade import chorus
 
 
 if __name__ == '__main__':
@@ -15,24 +14,17 @@ if __name__ == '__main__':
                         help='cluster config')
     parser.add_argument('--num', type=int, required=True,
                         help='number of writes to run')
-    parser.add_argument('--batch', type=int, default=1,
-                        help='batch size, so total writes is NUM * BATCH')
     args = parser.parse_args()
 
     conf = yaml.load(open(args.conf, 'r').read())
-    c = chain.Client(chorus.Client(conf['nodes']))
+    c = chain.Client(conf)
     obj_ids = conf['chain_map'].keys()
 
     st_time = time.time()
     for i in xrange(args.num):
-        requests = []
-        for j in xrange(args.batch):
-            obj_id = obj_ids[(i + j) % len(obj_ids)]
-            requests.append(
-                ('SET', obj_id, { 'k': 'foo', 'v': 'bar%d' % i })
-            )
-        c.multi_call(requests, 'hammer-kv')
+        obj_id = obj_ids[i % len(obj_ids)]
+        c.call('SET', obj_id, { 'k': 'foo', 'v': 'bar%d' % i }, 'hammer-kv')
 
     diff_time = time.time() - st_time
     print 'wrote %d messages/sec over %d secs' % \
-        ((args.num * args.batch / diff_time), diff_time)
+        (args.num / diff_time, diff_time)

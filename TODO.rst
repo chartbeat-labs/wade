@@ -15,9 +15,6 @@ TODO
 
 - Implement overlord framework. See "chain configuration" below.
 
-- Chain clients randomly select peers they use for reqrep. We should
-  take load or request time into effect (two choice).
-
 - Are there msgpack message limits? Full-sync and serialization seems
   potentially rough.
 

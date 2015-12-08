@@ -5,7 +5,6 @@ import argparse
 import yaml
 
 from wade import chain
-from wade import chorus
 
 
 def run_set(c, args, conf):
@@ -37,6 +36,5 @@ if __name__ == '__main__':
     args = parser.parse_args()
     conf = yaml.load(open(args.conf, 'r').read())
 
-    chorus_client = chorus.Client(conf['nodes'])
-    chain_client = chain.Client(chorus_client)
+    chain_client = chain.Client(conf)
     print args.func(chain_client, args, conf)
