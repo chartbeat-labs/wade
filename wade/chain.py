@@ -59,6 +59,7 @@ class CallState(object):
             pending,
             store,
             logger,
+            accept_updates=True,
     ):
         self._my_id = my_id
         self._call_peer = call_peer
@@ -68,6 +69,7 @@ class CallState(object):
         self._pending = pending
         self._store = store
         self._logger = logger
+        self._accept_updates = accept_updates
 
     def state_sanitize(self):
         """Check command makes sense and pre-calculate some useful
@@ -166,6 +168,10 @@ class CallState(object):
     def _check_update(self):
         """Check that update command makes sense."""
 
+        # Used during cluster configuration.
+        if not self._accept_updates:
+            raise RespondError('Node currently not accepting updates!')
+
         # If we're the head and this is an update command, the obj_seq
         # should not have already been assigned. If we're not at the
         # head then we expect the obj_seq to be assigned.
@@ -246,13 +252,26 @@ class Handler(object):
         self._pending = {}
         self._chain_map = {}
         self._conf = {}
+        self._accept_updates = True
 
         # special ops tell the node to do something, such as stop
         # reload config, stop accepting requests, but aren't regular
         # object commands
         self._special_ops = {
             '.RELOAD_CONF': ReloadConfOp(self, call_interface, self._logger),
+            '.SET_ACCEPT_UPDATES': self.set_accept_updates,
+            '.HEARTBEAT': lambda cmd, resp: resp(chorus.OK, 'OK'),
+            '.GET_CONFIG': lambda cmd, resp: resp(chorus.OK, self._conf),
         }
+
+    def set_accept_updates(self, cmd, resp):
+        self._accept_updates = cmd.args.get('accept_updates')
+        if self._accept_updates:
+            logmsg = 'Set node to accept updates.'
+        else:
+            logmsg = 'No longer accepting updates!'
+        self._logger.info(logmsg)
+        resp(chorus.OK, 'OK')
 
     def __call__(self, resp, call_peer, raw_cmd):
         try:
@@ -277,6 +296,7 @@ class Handler(object):
             self._pending,
             self._store,
             self._logger,
+            self._accept_updates,
         )
         state.state_sanitize()
 
