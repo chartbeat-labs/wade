@@ -5,6 +5,7 @@
 import logging
 import traceback
 from collections import namedtuple
+from functools import partial
 
 import chorus
 
@@ -26,6 +27,11 @@ Command = namedtuple('Command',
 
 
 class RespondError(Exception):
+    def __init__(self, message):
+        self.message = message
+
+
+class SpecialOpError(RespondError):
     def __init__(self, message):
         self.message = message
 
@@ -168,7 +174,6 @@ class CallState(object):
     def _check_update(self):
         """Check that update command makes sense."""
 
-        # Used during cluster configuration.
         if not self._accept_updates:
             raise RespondError('Node currently not accepting updates!')
 
@@ -258,20 +263,14 @@ class Handler(object):
         # reload config, stop accepting requests, but aren't regular
         # object commands
         self._special_ops = {
-            '.RELOAD_CONF': ReloadConfOp(self, call_interface, self._logger),
-            '.SET_ACCEPT_UPDATES': self.set_accept_updates,
+            '.RELOAD_CONF': partial(reload_conf_op, self, call_interface, self._logger),
+            '.SET_ACCEPT_UPDATES': partial(set_accept_updates_op, self, self._logger),
             '.HEARTBEAT': lambda cmd, resp: resp(chorus.OK, 'OK'),
             '.GET_CONFIG': lambda cmd, resp: resp(chorus.OK, self._conf),
         }
 
-    def set_accept_updates(self, cmd, resp):
-        self._accept_updates = cmd.args.get('accept_updates')
-        if self._accept_updates:
-            logmsg = 'Set node to accept updates.'
-        else:
-            logmsg = 'No longer accepting updates!'
-        self._logger.info(logmsg)
-        resp(chorus.OK, 'OK')
+    def set_accept_updates(self, accept_updates):
+        self._accept_updates = accept_updates
 
     def __call__(self, resp, call_peer, raw_cmd):
         try:
@@ -280,12 +279,16 @@ class Handler(object):
             resp(chorus.ERR, 'invalid command: %s' % raw_cmd)
             return
 
+        self._logger.debug("CMD %s", cmd)
+
         special_func = self._special_ops.get(cmd.op)
         if special_func:
-            special_func(cmd, resp)
+            try:
+                special_func(cmd, resp)
+            except SpecialOpError as e:
+                self._logger.error('special op error: %s', e.message)
+                resp(chorus.ERR, e.message)
             return
-
-        self._logger.debug("CMD %s", cmd)
 
         state = CallState(
             self._my_id,
@@ -305,23 +308,29 @@ class Handler(object):
         self._chain_map = self._conf['chain_map']
 
 
-class ReloadConfOp(object):
-    def __init__(self, handler, call_interface, logger):
-        self._handler = handler
-        self._call_interface = call_interface
-        self._logger = logger
+def reload_conf_op(handler, call_interface, logger, cmd, resp):
+    conf = cmd.args.get('conf')
+    if not conf:
+        raise SpecialOpError('error loading config, unable to set empty config')
 
-    def __call__(self, cmd, resp):
-        conf = cmd.args.get('conf')
-        if not conf:
-            self._logger.error('error loading config')
-            resp(chorus.ERR, 'unable to set empty config')
-            return
+    logger.warning('loading config version %s' % conf['version'])
+    call_interface.load_conf(conf['nodes'])
+    handler.set_conf(conf)
+    resp(chorus.OK, 'OK')
 
-        self._logger.warn('loading config version %s' % conf['version'])
-        self._call_interface.load_conf(conf['nodes'])
-        self._handler.set_conf(conf)
-        resp(chorus.OK, 'OK')
+
+def set_accept_updates_op(handler, logger, cmd, resp):
+    accept_updates = cmd.args.get('accept_updates')
+    if accept_updates is None or not isinstance(accept_updates, bool):
+        raise SpecialOpError('accept_updates is a required boolean param.')
+
+    if accept_updates:
+        logger.warning('Setting node to accept updates.')
+    else:
+        logger.warning('Setting node to not accept updates!')
+    handler.set_accept_updates(accept_updates)
+
+    resp(chorus.OK, 'OK')
 
 
 UPDATE_OP = 1
