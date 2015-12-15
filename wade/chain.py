@@ -65,7 +65,7 @@ class CallState(object):
             pending,
             store,
             logger,
-            accept_updates=True,
+            accept_updates,
     ):
         self._my_id = my_id
         self._call_peer = call_peer
@@ -175,7 +175,7 @@ class CallState(object):
         """Check that update command makes sense."""
 
         if not self._accept_updates:
-            raise RespondError('Node currently not accepting updates!')
+            raise RespondError('node currently not accepting updates')
 
         # If we're the head and this is an update command, the obj_seq
         # should not have already been assigned. If we're not at the
@@ -322,12 +322,12 @@ def reload_conf_op(handler, call_interface, logger, cmd, resp):
 def set_accept_updates_op(handler, logger, cmd, resp):
     accept_updates = cmd.args.get('accept_updates')
     if accept_updates is None or not isinstance(accept_updates, bool):
-        raise SpecialOpError('accept_updates is a required boolean param.')
+        raise SpecialOpError('accept_updates is a required boolean param')
 
     if accept_updates:
-        logger.warning('Setting node to accept updates.')
+        logger.warning('setting node to accept updates')
     else:
-        logger.warning('Setting node to not accept updates!')
+        logger.warning('setting node to not accept updates')
     handler.set_accept_updates(accept_updates)
 
     resp(chorus.OK, 'OK')
