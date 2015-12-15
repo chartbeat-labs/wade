@@ -15,6 +15,9 @@ TODO
 
 - Implement overlord framework. See "chain configuration" below.
 
+- Rewrite error messages, use PostgreSQL style guide:
+  http://www.postgresql.org/docs/8.1/static/error-style-guide.html
+
 - Are there msgpack message limits? Full-sync and serialization seems
   potentially rough.
 
@@ -28,9 +31,6 @@ TODO
   should we make this configurable? Perhaps there should be a
   cluster-wide "node unresponsive" timeout that both the overlord and
   nodes use.
-
-- Error handling overall needs to be carefully thought out. Debug
-  messages too (outputting obj_id and chain would be helpful).
 
 - pypy support. pyuv doesn't support pypy out of the box at the
   moment, but it's coming soon.
