@@ -288,6 +288,7 @@ class CallInterface(object):
             return
         del self._callbacks[req_id]
         callback(TIMEOUT, None)
+        timeout_handle.stop()
 
 
 class ClientError(Exception):
