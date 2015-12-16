@@ -148,7 +148,8 @@ class CallInterface(object):
         self._loop = loop
         self._conf = {}
         self._req_counter = 0
-        self._callbacks = {}
+        self._callbacks = {} # map req_id -> defn callback(status, msg)
+        self._timers = {} # map req_id -> Timer
 
         self._outgoing = {} # map peer_id -> Outgoing
         self._outgoing_timer = pyuv.Timer(self._loop)
@@ -179,6 +180,7 @@ class CallInterface(object):
         self._callbacks[req_id] = callback
 
         timeout_timer = pyuv.Timer(self._loop)
+        self._timers[req_id] = timeout_timer
         timeout_timer.start(
             partial(self._call_timeout_cb, peer_id, req_id),
             timeout=timeout,
@@ -270,25 +272,27 @@ class CallInterface(object):
         for payload in outgoing.unpacker:
             req_id, status, message = payload
             callback = self._callbacks.get(req_id)
-            if callback is None:
-                continue
-            # fixme: need to delete the associated timeout Timer
-            del self._callbacks[req_id]
-            callback(status, message)
+            timer = self._timers.get(req_id)
+
+            if timer is not None:
+                timer.stop()
+                del self._timers[req_id]
+
+            if callback is not None:
+                del self._callbacks[req_id]
+                callback(status, message)
 
     def _call_timeout_cb(self, peer_id, req_id, timeout_handle):
         """Called at timeout period specified by user into queue_call. This cb
         is always called, even if the request completed.
 
         """
-
         timeout_handle.stop()
         callback = self._callbacks.get(req_id)
         if callback is None:
             return
         del self._callbacks[req_id]
         callback(TIMEOUT, None)
-        timeout_handle.stop()
 
 
 class ClientError(Exception):
