@@ -77,7 +77,7 @@ class Node(object):
         client = pyuv.TCP(self._loop)
         server.accept(client)
         self._incoming[client] = Incoming(
-            msgpack.Packer(autoreset=False),
+            msgpack.Packer(),
             msgpack.Unpacker(),
         )
         client.start_read(self._incoming_read)
@@ -95,15 +95,10 @@ class Node(object):
 
         incoming = self._incoming[client]
         incoming.unpacker.feed(data)
-        requests = list(incoming.unpacker)
-        request_ids = [req_id for req_id, message in requests]
-        responses = {}
-
-        for r in requests:
-            req_id, message = r
+        for req_id, message in incoming.unpacker:
             self._call_handler(
                 partial(self._queue_response,
-                        client, request_ids, responses, req_id),
+                        client, req_id),
                 self._call_interface.queue_call,
                 message,
             )
@@ -111,12 +106,10 @@ class Node(object):
     def _queue_response(
             self,
             resp_address,
-            request_ids,
-            responses,
             req_id,
             status,
             message):
-        """Queues a response to a incoming batch request.
+        """Queues a response to an incoming request.
 
         Call handlers supply the status and message arguments to this
         function. The other arguments are bound by _incoming_read.
@@ -127,34 +120,13 @@ class Node(object):
         Where resp is the partially applied version of
         _queue_response.
 
-        When _queue_response notices that it has all the responses it
-        needs, it msgpacks it and sends it back to the client.
-
         """
-
-        if req_id in responses:
-            # fixme: handle error
-            return
-
-        responses[req_id] = (status, message)
-
-        if len(request_ids) != len(responses):
-            return
-
-        if sorted(request_ids) != sorted(responses.keys()):
-            # fixme: handle error
-            return
 
         incoming = self._incoming.get(resp_address)
         if not incoming:
             return
 
-        for req_id in request_ids:
-            status, message = responses[req_id]
-            incoming.packer.pack([req_id, status, message])
-        data = incoming.packer.bytes()
-        incoming.packer.reset()
-
+        data = incoming.packer.pack([req_id, status, message])
         resp_address.write(data)
 
 
@@ -310,6 +282,7 @@ class CallInterface(object):
 
         """
 
+        timeout_handle.stop()
         callback = self._callbacks.get(req_id)
         if callback is None:
             return

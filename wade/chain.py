@@ -227,7 +227,10 @@ class CallState(object):
     def _remove_from_pending(self):
         """Remove command from pending set."""
 
-        self._pending.pop((self._cmd.obj_id, self._cmd.obj_seq), None)
+        try:
+            del self._pending[(self._cmd.obj_id, self._cmd.obj_seq)]
+        except KeyError:
+            pass
 
     def _check_query(self):
         """Check that query command makes sense."""
