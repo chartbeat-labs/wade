@@ -27,13 +27,7 @@ Command = namedtuple('Command',
 
 
 class RespondError(Exception):
-    def __init__(self, message):
-        self.message = message
-
-
-class SpecialOpError(RespondError):
-    def __init__(self, message):
-        self.message = message
+    pass
 
 
 class CallState(object):
@@ -288,8 +282,8 @@ class Handler(object):
         if special_func:
             try:
                 special_func(cmd, resp)
-            except SpecialOpError as e:
-                self._logger.error('special op error: %s', e.message)
+            except Exception as e:
+                self._logger.exception(e)
                 resp(chorus.ERR, e.message)
             return
 
@@ -314,7 +308,7 @@ class Handler(object):
 def reload_conf_op(handler, call_interface, logger, cmd, resp):
     conf = cmd.args.get('conf')
     if not conf:
-        raise SpecialOpError('error loading config, unable to set empty config')
+        raise ValueError('error loading config, unable to set empty config')
 
     logger.warning('loading config version %s' % conf['version'])
     call_interface.load_conf(conf['nodes'])
@@ -325,7 +319,7 @@ def reload_conf_op(handler, call_interface, logger, cmd, resp):
 def set_accept_updates_op(handler, logger, cmd, resp):
     accept_updates = cmd.args.get('accept_updates')
     if accept_updates is None or not isinstance(accept_updates, bool):
-        raise SpecialOpError('accept_updates is a required boolean param')
+        raise ValueError('accept_updates is a required boolean param')
 
     if accept_updates:
         logger.warning('setting node to accept updates')
@@ -389,11 +383,11 @@ class Store(object):
         raise NotImplementedError()
 
     def get_op(self, op_name):
-        func = getattr(self, op_name)
-        if hasattr(func, '_op_type'):
+        func = getattr(self, op_name, None)
+        if func and hasattr(func, '_op_type'):
             return func
-        else:
-            return None
+
+        return None
 
 
 class Client(object):
