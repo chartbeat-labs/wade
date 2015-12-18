@@ -1,0 +1,133 @@
+#!/usr/bin/env python
+
+"""Interface to special_op commands."""
+
+
+import os
+import pwd
+import sys
+import json
+import socket
+import argparse
+
+import yaml
+
+from wade import chain
+
+
+def yaml_type(fname):
+    """Argparse type that interprets file as YAML and returns a Python
+    structure.
+
+    """
+
+    finp = open(fname, 'r')
+    return yaml.load(finp.read())
+
+def string_from_file_type(fname):
+    """Argparse type that loads a file (or stdin) and returns a string."""
+
+    if fname == '-':
+        finp = sys.stdin
+    else:
+        finp = open(fname, 'r')
+
+    return finp.read()
+
+def bool_type(val):
+    """Argparse bool type. You're supposed to use store_action with the
+    default bool type, but since our op framework doesn't allow for
+    that we do some 'intelligent' parsing instead.
+
+    """
+
+    val = str(val).lower()
+    if val in ['true', '1', 'y']:
+        return True
+    if val in ['false', '0', 'n']:
+        return False
+    raise ValueError("valid values: true/false, y/n, 1/0")
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(
+        description="General command interface to WADE cluster."
+    )
+    parser.add_argument('_conf', metavar='cluster_conf', type=yaml_type,
+                        help="cluster config")
+    parser.add_argument('_peer_id', metavar='peer_id', type=str,
+                        help="peer id, use '-' for all")
+
+    ops = {
+        'reload_config': {
+            'help': "reload peer's config",
+            'argdefs': [
+                ('--conf', yaml_type, "config file"),
+            ],
+        },
+
+        'get_config': {
+            'help': "get peer's config",
+            'argdefs': [],
+        },
+
+        'set_accept_updates': {
+            'help': "set node to accept/reject updates",
+            'argdefs': [
+                ('--accept_updates', bool_type, "accept update state"),
+            ],
+        },
+
+        'pdb': {
+            'help': "start remote pdb",
+            'argdefs': [
+                ('--port', int, "remote port (you then telnet to it)"),
+            ],
+        },
+
+        'inject_code': {
+            'help': "execute arbitrary code on peer",
+            'argdefs': [
+                ('--code', string_from_file_type,
+                 "path to code or '-' for stdin"),
+            ],
+        },
+    }
+
+    # convert the ops definitions from above into subparser commands
+    subparsers = parser.add_subparsers(title="special ops")
+    for op_name, op_def in ops.items():
+        p = subparsers.add_parser(op_name, help=op_def['help'])
+        for argname, argtype, arghelp in op_def['argdefs']:
+            p.add_argument(argname, type=argtype, required=True, help=arghelp)
+        p.set_defaults(_op_name=('.' + op_name.upper()))
+
+    args = parser.parse_args()
+
+    # it's easier to work with it if it's a dict
+    args = args.__dict__
+
+    # strip out args that aren't a part of the special op
+    conf = args['_conf']
+    del args['_conf']
+
+    peer_id = args['_peer_id']
+    if peer_id == '-':
+        peer_id = None
+    else:
+        peer_id = int(peer_id)
+    del args['_peer_id']
+
+    op_name = args['_op_name']
+    del args['_op_name']
+
+
+    username = pwd.getpwuid(os.getuid()).pw_name
+    hostname = socket.gethostname()
+    debug_tag = "%s@%s" % (username, hostname)
+
+    c = chain.Client(conf)
+    print json.dumps(
+        c.special_op(peer_id, op_name, args, debug_tag),
+        sort_keys=True,
+    )

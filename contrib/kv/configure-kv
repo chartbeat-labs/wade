@@ -17,4 +17,4 @@ if __name__ == '__main__':
 
     nodes = conf['nodes']
     c = chain.Client(conf)
-    print c.special_op(None, '.RELOAD_CONF', { 'conf': conf }, 'configure-kv')
+    print c.special_op(None, '.RELOAD_CONFIG', { 'conf': conf }, 'configure-kv')

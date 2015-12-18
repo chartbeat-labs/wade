@@ -17,6 +17,8 @@ if __name__ == '__main__':
                         help='cluster config')
     parser.add_argument('--debug', action='store_true', default=False,
                         help='debug output')
+    parser.add_argument('--dangerous_debug', action='store_true', default=False,
+                        help='allow dangerous debugging ops')
 
     args = parser.parse_args()
     my_id = args.id
@@ -34,5 +36,5 @@ if __name__ == '__main__':
     logging.info("starting wade-kv on port %d", my_port)
 
     data_store = kv_store.Store()
-    loop = standard_setup(my_id, my_port, data_store)
+    loop = standard_setup(my_id, my_port, data_store, args.dangerous_debug)
     loop.run()

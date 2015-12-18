@@ -10,7 +10,7 @@ from wade.chorus import Node
 from wade.chorus import CallInterface
 
 
-def standard_setup(my_id, port, store):
+def standard_setup(my_id, port, store, allow_dangerous_debugging):
     """Sets up and return a pyuv loop to run as the main server.
 
     Sets up signal handling in addition to the call interface and node
@@ -20,7 +20,12 @@ def standard_setup(my_id, port, store):
 
     loop = pyuv.Loop()
     call_interface = CallInterface(loop)
-    handler = chain.Handler(my_id, store, call_interface)
+    handler = chain.Handler(
+        my_id,
+        store,
+        call_interface,
+        allow_dangerous_debugging,
+    )
 
     return node_setup(port, handler, call_interface, loop)
 

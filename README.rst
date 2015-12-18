@@ -240,14 +240,19 @@ Command interfaces must support:
 Special Ops
 -----------
 
-- Fast-sync.
+Special ops are commands that are run directly on a node and never
+forwarded. They're mostly administrative and debugging commands.
 
-- Full-sync.
+- Fast-sync. (not implemented)
 
-- Write-pause (causes head to drop requests, but tail still responds
-  to query commands).
+- Full-sync. (not implemented)
 
-- Read-pause (causes head and tail to drop requests).
+- reload_config / get_config: set and get node configuration.
+
+- accept_updates: causes head to drop update commands or allow them
+  through
+
+- pdb / inject_code: see Debugging section below.
 
 
 Clients
@@ -318,6 +323,32 @@ This repo contains a Vagrantfile which will bring up a development
 environment with the necessary Python packages.
 
 This repo also contains sample databases in the ``contrib`` directory.
+
+
+Debugging
+---------
+
+WADE has a "dangerous debugging" mode, which is the
+``--dangerous_debug`` flag if using ``wade.into`` helpers. This turns
+on two special ops: ``PDB`` and ``INJECT_CODE``.
+
+``PDB`` allows the programmer to stop WADE and attach pdb to a port on
+the node. You can then telnet to that port and remotely run a pdb
+session. Note that while this session is open, WADE completely stops
+responding, even to the command that started pdb.
+
+Unfortunately, telnet doesn't give much in the way of being able to
+use all the libreadline goodness we're accustomed to everywhere
+else. To slightly compensate for this, ``INJECT_CODE`` allows the
+programmer to write Python code and directly inject + execute it in
+the special ops handler. The function gets access to a local variable,
+``handler``, which is the ``chain.Handler`` instance.
+``chain.Handler``, in turn, has access to everything else that should
+be useful for debugging. See the code for documentation on how to use
+this awesome feature.
+
+Of course both of these functions are dangerous security risks, and so
+they're turned off by default.
 
 
 Things To Understand

@@ -7,6 +7,8 @@ import traceback
 from collections import namedtuple
 from functools import partial
 
+from remote_pdb import RemotePdb
+
 import chorus
 
 
@@ -244,7 +246,7 @@ class Handler(object):
 
     """
 
-    def __init__(self, my_id, store, call_interface):
+    def __init__(self, my_id, store, call_interface, allow_dangerous_debugging):
         self._logger = logging.getLogger('wade.chain')
 
         self._my_id = my_id
@@ -255,16 +257,25 @@ class Handler(object):
         self._chain_map = {}
         self._conf = {}
         self._accept_updates = True
+        self._allow_dangerous_debugging = allow_dangerous_debugging
 
         # special ops tell the node to do something, such as stop
         # reload config, stop accepting requests, but aren't regular
         # object commands
         self._special_ops = {
-            '.RELOAD_CONF': partial(reload_conf_op, self, call_interface, self._logger),
+            '.RELOAD_CONFIG': partial(reload_config_op, self, call_interface, self._logger),
+            '.GET_CONFIG': lambda cmd, resp: resp(chorus.OK, self._conf),
             '.SET_ACCEPT_UPDATES': partial(set_accept_updates_op, self, self._logger),
             '.HEARTBEAT': lambda cmd, resp: resp(chorus.OK, 'OK'),
-            '.GET_CONFIG': lambda cmd, resp: resp(chorus.OK, self._conf),
         }
+
+        if self._allow_dangerous_debugging:
+            self._special_ops.update(
+                {
+                    '.PDB': partial(start_remote_pdb_op, self, self._logger),
+                    '.INJECT_CODE': partial(inject_code_op, self, self._logger),
+                }
+            )
 
     def set_accept_updates(self, accept_updates):
         self._accept_updates = accept_updates
@@ -305,7 +316,7 @@ class Handler(object):
         self._chain_map = self._conf['chain_map']
 
 
-def reload_conf_op(handler, call_interface, logger, cmd, resp):
+def reload_config_op(handler, call_interface, logger, cmd, resp):
     conf = cmd.args.get('conf')
     if not conf:
         raise ValueError('error loading config, unable to set empty config')
@@ -328,6 +339,39 @@ def set_accept_updates_op(handler, logger, cmd, resp):
     handler.set_accept_updates(accept_updates)
 
     resp(chorus.OK, 'OK')
+
+
+def start_remote_pdb_op(handler, logger, cmd, resp):
+    """Starts remote debugger on specified port."""
+
+    port = cmd.args['port']
+    logger.warning("starting remote debugger on port %d", port)
+
+    RemotePdb('0.0.0.0', port).set_trace()
+    resp(chorus.OK, 'OK')
+
+
+def inject_code_op(handler, logger, cmd, cont):
+    """Takes injected code and executes in server context.
+
+    This is obviously dangerous and should only be used for debugging
+    purposes. The injected code gets a reference to the handler, from
+    which it should be able to reach everything else.
+
+    The Python code runs within this function context, so it has
+    access to all of this function's variables directly in its own
+    scope. It should set the 'response' variable to return something
+    useful to the calling client.
+
+    """
+
+    code = cmd.args['code']
+
+    logger.warning("injecting code: %s", code)
+
+    response = "!! .INJECT_CODE: code should set 'response' variable'"
+    exec(compile(code, '.INJECT_CODE', 'exec'))
+    cont(chorus.OK, response)
 
 
 UPDATE_OP = 1
