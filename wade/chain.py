@@ -7,8 +7,6 @@ import traceback
 from collections import namedtuple
 from functools import partial
 
-from remote_pdb import RemotePdb
-
 import chorus
 
 
@@ -343,6 +341,8 @@ def set_accept_updates_op(handler, logger, cmd, resp):
 
 def start_remote_pdb_op(handler, logger, cmd, resp):
     """Starts remote debugger on specified port."""
+
+    from remote_pdb import RemotePdb
 
     port = cmd.args['port']
     logger.warning("starting remote debugger on port %d", port)
