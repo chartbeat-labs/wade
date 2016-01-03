@@ -2,5 +2,4 @@ PyYAML==3.11
 argparse==1.2.1
 msgpack-python==0.4.6
 pyuv==1.2.0
-recordclass==0.4
 remote-pdb==1.2.0

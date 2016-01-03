@@ -9,7 +9,6 @@ import socket
 import logging
 from functools import partial
 from collections import namedtuple
-from recordclass import recordclass
 
 import pyuv
 import msgpack
@@ -24,7 +23,7 @@ class NodeError(Exception):
     pass
 
 # Represents an incoming connection.
-Incoming = recordclass(
+Incoming = namedtuple(
     'Incoming',
     ['packer', 'unpacker'],
 )
