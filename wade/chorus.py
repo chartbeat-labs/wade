@@ -5,19 +5,29 @@ peers.
 
 """
 
-import socket
 import logging
+import socket
+import threading
+import Queue
 from functools import partial
+from collections import defaultdict
 from collections import namedtuple
+from select import select
+
 
 import pyuv
 import msgpack
+from posix_ipc import Semaphore, O_CREX, BusyError
 
 
 OK = 'ok'
 ERR = 'err'
 CALL_LIMIT = 'call_limit'
 PEER_DISCONNECT = 'peer_disconnect'
+TIMEOUT = 'timeout'
+RECV_BYTES = 65536
+SOCKET_CREATION_TIMEOUT = 1
+SELECT_TIMEOUT = 1000 # timeout for select.select
 
 
 class NodeError(Exception):
@@ -313,49 +323,243 @@ class ClientError(Exception):
     pass
 
 
+""" Begin client code """
+
+
+class Peer(object):
+    def __init__(self, peer_id, socket):
+        self.peer_id = peer_id
+        self.socket = socket
+        self.outgoing_queue = Queue.Queue()
+        self.incoming_buffer = msgpack.Unpacker()
+        self.lock = threading.Lock()
+
+    def close(self):
+        try:
+            self.lock.release()
+        except threading.ThreadError: 
+            pass # lock may not have been acquired. 
+        self.socket.close()
+
+
+class ValueEvent(object):
+    """This class provides behavior similar to threading.Event. However, it
+    allows associating a value when "setting" (or notifying) the Event object.
+
+    Additionally, threading.Event is substituted by posix_ipc.Semaphore
+    to avoid the delay when waiting for Events with a timeout:
+    http://stackoverflow.com/questions/21779183/python-eventwait-with-timeout-gives-delay
+    """
+    def __init__(self, default_value=None):
+        '''
+        @param default_value, object to return if wait_for_value(...) times out.
+        '''
+        self.value = default_value
+        self.event = Semaphore(None, flags=O_CREX)
+
+    def __del__(self):
+        # If unlink isn't explicitly called the OS will *not* release the
+        # semaphore object, even if the program crashes. Some applications make
+        # use of a separate process whose sole responsibility is to create and
+        # destroy semaphores. We may want do this or pass the semaphores known
+        # names on initialization so they can be reclaimed on restart.
+        self.event.unlink()
+
+    def wait_for_value(self, timeout):
+        try:
+            self.event.acquire(timeout)
+        except BusyError: # timeout
+            pass
+        return self.value
+
+    def set_value(self, value):
+        self.value = value
+        self.event.release()
+
+    def reset(self, default_value):
+        assert(self.event.value == 0)
+        self.value = default_value
+
+
 class Client(object):
-    """Synchronous client implementation.
-
-    This is a piss poor implementation. It's not threadsafe and
-    greedily tries to establish connections to peers, and actually
-    doesn't seem to handle peer disconnections at all. Failure mode:
-    spectacular.
-
+    """Multithreaded client implementation.
     """
 
-    def __init__(self, conf):
+    def __init__(self, conf, timeout):
         self._conf = conf
-        self._req_count = 0
-        self._peers = {}
-        self._packer = msgpack.Packer()
+        self._timeout = timeout
         self._unpacker = msgpack.Unpacker()
+        self._packer = msgpack.Packer()
 
-    def reqrep(self, peer_id, message):
-        """Simulates a reqrep call pattern."""
+        # connection variables
+        self._peers = {} # peer_id -> Peer
+        self._sock_to_peer = {} # socket.connection -> Peer
+        self._peers_lock = threading.Lock() # for _peers and _sock_to_peers
 
-        self._ensure_connection(peer_id)
+        # request / response variables
+        self._req_count = 0
+        self._req_count_lock = threading.Lock()
+        self._pending_requests = {} # req_id -> ValueEvent
+        self._pending_requests_lock = threading.Lock()        
 
-        data = [self._req_count, message]
-        self._req_count += 1
-        peer = self._peers[peer_id]
-        peer.sendall(self._packer.pack(data))
+        # For reuse of ValueEvent objects by a thread.
+        self._threadlocal = threading.local()
+        
+        bg_thread = threading.Thread(target=self._process_requests_in_background)
+        bg_thread.setDaemon(True)
+        bg_thread.start()
 
+    def _bg_clean_up_peer(self, peer):
+        """Remove peer and associated sockets from _peers and _sock_to_peer.
+        Also close the peer.
+        """
+        with self._peers_lock:
+            del self._peers[peer.peer_id]
+            del self._sock_to_peer[peer.socket]
+        peer.close()
+        peer = None
+
+    def _bg_handle_response(self, response):
+        """Extract req_id from response and check if there is a pending request 
+        for the req_id. If so set the value.
+        """
+        with self._pending_requests_lock:
+            req_id, status, message = response
+            if req_id in self._pending_requests: # request may have timed out
+                self._pending_requests[req_id].set_value((status, message))
+
+    def _bg_select_peers(self, timeout=SELECT_TIMEOUT):
+        """Similar to select.select, but instead of returning sockets this
+        returns the associated Peer objects.
+        """
+        with self._peers_lock:
+            peers = self._sock_to_peer.keys()
+        
+        if not peers:
+            return [], [], []
+
+        readable, writable, exceptional = select(peers, peers, peers, timeout)
+        readable = [self._sock_to_peer[s] for s in readable]
+        writable = [self._sock_to_peer[s] for s in writable]
+        exceptional = [self._sock_to_peer[s] for s in exceptional]
+        return readable, writable, exceptional
+
+    def _process_requests_in_background(self):
+        """Executes forever, handles sending and receiving messages from peers.
+        Meant to be called in a background thread (see constructor).
+
+        When reqrep is called a message is enqueued to the outgoing requests
+        queue of the destination peer with an associated request id. The request
+        id is also used to create a ValueEvent object in the _pending_requests
+        dict such that this function can "respond" to the reqrep call.
+
+        For each writable peer, this function dequeues a messages from the peers
+        outgoing queue, if one exists, and sends it along on the peer's socket.
+
+        Additionally, this function checks for peers with readable data and
+        feeds the data into the peer's incoming_buffer until a message can be
+        read. The request id is read from the message and if a pending request
+        exists the ValueEvent object is "set" with the message contents.
+
+        Additionally, this loop handles client disconnects / errors.
+        """
         while True:
-            data = peer.recv(65536)
-            if not data:
-                raise ClientError("fetch from peer %d failed" % peer_id)
+            readable, writable, exceptional = self._bg_select_peers()
 
-            self._unpacker.feed(data)
-            try:
-                req_id, status, message = self._unpacker.unpack()
-            except msgpack.OutOfData:
-                continue
+            for peer in readable:
+                data = peer.socket.recv(RECV_BYTES)
+                if data:
+                    peer.incoming_buffer.feed(data)
+                    try:
+                        response = peer.incoming_buffer.unpack()
+                    except msgpack.OutOfData:
+                        continue
+                    self._bg_handle_response(response)
+                else:
+                    self._bg_clean_up_peer(peer)
+                    if peer in writable:
+                        writable.remove(peer)
+                    if peer in exceptional:
+                        exceptional.remove(peer)
 
-            return status, message
+            for peer in writable:
+                try:
+                    next_msg = peer.outgoing_queue.get_nowait()
+                except Queue.Empty:
+                    continue
+                peer.socket.sendall(self._packer.pack(next_msg))
 
-    def _ensure_connection(self, peer_id):
-        if peer_id in self._peers:
-            return
+            for peer in exceptional:
+                print 'handling exceptional condition for peer %s at %s' % \
+                          (peer.peer_id, peer.socket.getpeername())
+                self._bg_clean_up_peer(peer)
 
-        sock = socket.create_connection(self._conf[peer_id])
-        self._peers[peer_id] = sock
+    def _ensure_value_event(self, default_value):
+        """This ensures the calling thread has its own ValueEvent object and if
+        not creates one and stores it in a thread local. There is significant
+        overhead to creating ValueEvent objects since they map to OS semaphores.
+        A ValueEvent object is used by one thread at a time so it can be safely
+        reused instead of creating a new one for each call to reqrep.
+
+        @param default_value: The default or timeout value for the ValueEvent
+            object, either on its construction or if it's being reused.
+        @return: ValueEvent
+        """
+        if not hasattr(self._threadlocal, 'event'):
+            value_event = ValueEvent(default_value)
+            self._threadlocal.event = value_event
+        else:
+            value_event = self._threadlocal.event
+            value_event.reset(default_value)
+
+        return value_event
+
+    def _ensure_connection(self, peer_id, timeout=SOCKET_CREATION_TIMEOUT):
+        with self._peers_lock:
+            if peer_id not in self._peers:
+                sock = socket.create_connection(self._conf[peer_id],
+                                                timeout=timeout)
+                peer = Peer(peer_id, sock)
+                self._peers[peer_id] = peer
+                self._sock_to_peer[sock] = peer
+
+            return self._peers[peer_id]
+
+    def _inc_req_count(self):
+        with self._req_count_lock:
+            curr = self._req_count
+            self._req_count += 1
+            return curr
+
+    def close(self):
+        for peer in self._peers.values():
+            self._bg_clean_up_peer(peer)
+
+    def reqrep(self, peer_id, message, timeout=False):
+        """
+        @param timeout, float. In seconds, optional if set on client
+            initialization. Specify None for no timeout.
+        """
+        if timeout is False and self._timeout is False:
+            raise ClientError('must specify timeout value')
+        elif timeout is False:
+            timeout = self._timeout
+
+        peer = self._ensure_connection(peer_id)      
+        req_id = self._inc_req_count()
+
+        timeout_resp = (ERR, 'request timed out after %s s' % (timeout))
+        value_event = self._ensure_value_event(timeout_resp)
+
+        with self._pending_requests_lock:
+            self._pending_requests[req_id] = value_event
+
+        with peer.lock:
+            peer.outgoing_queue.put([req_id, message]) # FIXME put bytes instead!
+            value_event.wait_for_value(timeout)
+        
+        with self._pending_requests_lock:
+            status, message = self._pending_requests[req_id].value
+            del self._pending_requests[req_id]
+
+        return status, message

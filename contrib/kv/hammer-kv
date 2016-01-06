@@ -1,29 +1,74 @@
 #!/usr/bin/env python
 
 import time
+import threading
 import argparse
 
 import yaml
 from wade import chain
+from wade import chorus
+
+
+def partition(lst, n):
+    '''Partition lst into n chunks.
+    '''
+    q, r = divmod(len(lst), n)
+    indices = [q*i + min(i, r) for i in xrange(n+1)]
+    return [lst[indices[i]:indices[i+1]] for i in xrange(n)]
+
+
+def process_updates(client, obj_ids, work):
+    for i in work:
+        obj_id = obj_ids[i % len(obj_ids)]
+        status, message = client.update(
+            'SET',
+             obj_id,
+             { 'k': 'foo', 'v': 'bar%d' % i },
+             'hammer-kv'
+        )
+
+
+def process_updates_multithreaded(client, obj_ids, num, num_workers):
+    partitioned_work = partition(range(num), num_workers)
+    workers = [
+        threading.Thread(target=process_updates, args=(client, obj_ids, work))
+        for work in partitioned_work
+    ]
+
+    for worker in workers:
+        worker.start()
+
+    for worker in workers:
+        worker.join()
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='kv hammer')
+    parser = argparse.ArgumentParser(description='multithreaded kv hammer')
     parser.add_argument('--conf', type=str, required=True,
                         help='cluster config')
     parser.add_argument('--num', type=int, required=True,
-                        help='number of writes to run')
+                        help='number of writes to run in total')
+    parser.add_argument('--workers', type=int, required=False, default=1,
+                        help='number of worker threads to run, 0 ' \
+                             'spawns a thread per object id.')
     args = parser.parse_args()
 
     conf = yaml.load(open(args.conf, 'r').read())
-    c = chain.Client(conf)
     obj_ids = conf['chain_map'].keys()
+    num_workers = args.workers if args.workers != 0 else len(obj_ids)
+    c = chain.Client(conf, 0.1)
+
+    print 'Processing %d messages with %d worker(s)...' % (args.num, num_workers)
 
     st_time = time.time()
-    for i in xrange(args.num):
-        obj_id = obj_ids[i % len(obj_ids)]
-        c.update('SET', obj_id, { 'k': 'foo', 'v': 'bar%d' % i }, 'hammer-kv')
+
+    if num_workers == 1:
+        process_updates(c, obj_ids, range(args.num))
+    else:
+        process_updates_multithreaded(c, obj_ids, args.num, num_workers)
 
     diff_time = time.time() - st_time
-    print 'wrote %d messages/sec over %d secs' % \
-        (args.num / diff_time, diff_time)
+    print 'wrote %d messages/sec over %d secs with %d workers' % \
+        (args.num / diff_time, diff_time, num_workers)
+
+    c.close()

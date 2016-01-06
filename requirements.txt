@@ -4,3 +4,4 @@ msgpack-python==0.4.6
 pyuv==1.2.0
 remote-pdb==1.2.0
 swailing==0.1.1
+posix_ipc==1.0.0

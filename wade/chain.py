@@ -596,10 +596,13 @@ class Client(object):
 
     """
 
-    def __init__(self, conf):
+    def __init__(self, conf, timeout):
         self._conf = conf
-        self._chorus_client = chorus.Client(self._conf['nodes'])
+        self._chorus_client = chorus.Client(self._conf['nodes'], timeout)
         self._peer_ids = self._conf['nodes'].keys()
+
+    def close(self):
+        self._chorus_client.close()
 
     def update(self, op_name, obj_id, args, debug_tags):
         return self._call('UPDATE', op_name, obj_id, args, debug_tags)
