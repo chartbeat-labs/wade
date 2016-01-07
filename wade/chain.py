@@ -2,10 +2,13 @@
 
 """
 
+import json
 import logging
 import traceback
 from collections import namedtuple
 from functools import partial
+
+import swailing
 
 import chorus
 
@@ -26,8 +29,32 @@ Command = namedtuple('Command',
 
 
 
-class RespondError(Exception):
-    pass
+class RespondWithError(Exception):
+    """Represents an error that should be logged and then converted into a
+    chorus.ERR response.
+
+    Is coupled tightly with swailing.Logger.
+
+    code - error code, one word (INTERNAL, FORWARD), this is what's
+           returned in chorus layer
+    primary - sentence
+    detail - dict of useful debug values
+    hint - sentence of possible cause
+
+    """
+
+    def __init__(self, code, primary, detail, hint):
+        self.code = code
+        self.primary = primary
+        self.detail = detail
+        self.hint = hint
+
+    def log(self, logger):
+        logger.primary(self.primary)
+        info = { '_primary': self.primary }
+        info.update(self.detail)
+        logger.detail('DETAIL: %s' % json.dumps(info))
+        logger.hint('HINT: %s' % self.hint)
 
 
 class CallState(object):
@@ -80,18 +107,34 @@ class CallState(object):
         try:
             self._func = self._store.get_op(self._cmd.op)
             if not self._func:
-                raise RespondError('no function defined for op: %s' % self._cmd.op)
+                raise RespondWithError(
+                    'INTERNAL',
+                    "undefined op: %s" % self._cmd.op,
+                    {
+                        'id': self._my_id,
+                        'op': self._cmd.op,
+                    },
+                    "Client and node versions possibly differ.",
+                )
 
             self._chain = self._chain_map.get(self._cmd.obj_id)
             if not self._chain:
-                raise RespondError('no chain for obj %s' % self._cmd.obj_id)
+                raise RespondWithError(
+                    'INTERNAL',
+                    "cannot find chain for obj_id %s" % self._cmd.obj_id,
+                    {
+                        'id': self._my_id,
+                        'obj_id': self._cmd.obj_id,
+                    },
+                    "Client and node may have differing configurations.",
+                )
 
             self._in_chain = self._my_id in self._chain
             self._is_head = self._chain[0] == self._my_id
             self._is_tail = self._chain[-1] == self._my_id
             self._is_body = self._in_chain and not (self._is_head or self._is_tail)
             self._obj_seq_assigned = self._cmd.obj_seq != -1
-            self._next_node_id = None
+            self._inward_node_id = None
 
             if self._func._op_type == UPDATE_OP:
                 self._check_update()
@@ -100,9 +143,11 @@ class CallState(object):
 
             if self._func._op_type == QUERY_OP:
                 self._check_query()
-        except RespondError as resp:
+        except RespondWithError as resp:
             self._remove_from_pending()
-            self._respond(chorus.ERR, resp.message)
+            with self._logger.error() as logger:
+                resp.log(logger)
+            self._respond(chorus.ERR, resp.code)
             return
 
         self.state_prepare()
@@ -116,16 +161,16 @@ class CallState(object):
         if self._func._op_type == UPDATE_OP and not self._is_tail:
             # update not at tail, so forward
             my_index = self._chain.index(self._my_id)
-            self._next_node_id = self._chain[my_index + 1]
+            self._inward_node_id = self._chain[my_index + 1]
 
             self._call_peer(
-                self._next_node_id,
+                self._inward_node_id,
                 self._cmd._asdict(),
                 self.state_commit,
                 timeout=1.0,
             )
         else:
-            self._next_node_id = None
+            self._inward_node_id = None
             self.state_commit(chorus.OK, None)
 
     def state_commit(self, status, message):
@@ -136,18 +181,39 @@ class CallState(object):
 
         try:
             if status != chorus.OK:
-                raise RespondError(
-                    '%d forward to %d failed: %s' % \
-                    (self._my_id, self._next_node_id, message)
+                if status == chorus.TIMEOUT:
+                    hint = "Inward node unavailable or under high load."
+                else:
+                    if self._inward_node_id is not None:
+                        hint = "Check inward node's error logs."
+                    else:
+                        hint = "Not sure."
+
+                raise RespondWithError(
+                    'FORWARD',
+                    "forward failed",
+                    {
+                        'id': self._my_id,
+                        'inward_node_id': self._inward_node_id,
+                        'code': message,
+                    },
+                    hint,
                 )
 
             if self._func._op_type == UPDATE_OP:
                 cur_seq = self._store.max_seq(self._cmd.obj_id)
                 if self._cmd.obj_seq != cur_seq + 1:
                     self._remove_from_pending()
-                    raise RespondError(
-                        '%d out of order commit attempt, cur = %d, attempt = %d' % \
-                        (self._my_id, cur_seq, self._cmd.obj_seq)
+                    raise RespondWithError(
+                        'INTERNAL',
+                        'out of order commit attempt',
+                        {
+                            'id': self._my_id,
+                            'current': cur_seq,
+                            'attempt': self._cmd.obj_seq,
+                        },
+                        "Previous update to inward node may have timed out " \
+                        "or client/server have inconsistent configurations.",
                     )
 
             ret = self._func(
@@ -155,11 +221,26 @@ class CallState(object):
                 self._cmd.obj_seq,
                 self._cmd.args,
             )
-        except RespondError as resp:
-            self._respond(chorus.ERR, resp.message)
+        except RespondWithError as resp:
+            with self._logger.error() as logger:
+                resp.log(logger)
+
+            self._respond(chorus.ERR, resp.code)
             return
         except Exception:
-            self._respond(chorus.ERR, traceback.format_exc())
+            resp = RespondWithError(
+                'INTERNAL',
+                'unhandled exception',
+                {
+                    'id': self._my_id,
+                    'traceback': traceback.format_exc(),
+                },
+                "Custom store failed in some way.",
+            )
+            with self._logger.error() as logger:
+                resp.log(logger)
+
+            self._respond(chorus.ERR, resp.code)
             return
 
         self._remove_from_pending()
@@ -169,21 +250,43 @@ class CallState(object):
         """Check that update command makes sense."""
 
         if not self._accept_updates:
-            raise RespondError('node currently not accepting updates')
+            raise RespondWithError(
+                'INTERNAL',
+                'not accepting updates',
+                {
+                    'id': self._my_id,
+                    'accept_updates': self._accept_updates,
+                },
+                "Previously received command to stop accepting updates.",
+            )
 
         # If we're the head and this is an update command, the obj_seq
         # should not have already been assigned. If we're not at the
         # head then we expect the obj_seq to be assigned.
         if self._is_head and self._obj_seq_assigned:
-            raise RespondError(
-                'update at head already assigned seq, obj_id %s, chain: %s' % \
-                (self._cmd.obj_id, self._chain)
+            raise RespondWithError(
+                'FORWARD',
+                'update command already assigned seq',
+                {
+                    'id': self._my_id,
+                    'obj_id': self._cmd.obj_id,
+                    'chain': self._chain,
+                    # fixme: would be nice to have the outward node id
+                },
+                "Nodes may have inconsistent configurations.",
             )
 
         if not self._is_head and not self._obj_seq_assigned:
-            raise RespondError(
-                'update command not at head, obj_id %s, chain: %s' % \
-                (self._cmd.obj_id, self._chain)
+            raise RespondWithError(
+                'FORWARD',
+                'update command missing seq',
+                {
+                    'id': self._my_id,
+                    'obj_id': self._cmd.obj_id,
+                    'chain': self._chain,
+                    # fixme: would be nice to have the outward node id
+                },
+                "Nodes may have inconsistent configurations.",
             )
 
         # So to restate the logic from the above two if statements.
@@ -213,8 +316,17 @@ class CallState(object):
         # fixme: need to also reject commands with sequences less
         # than the max in the pending set
         if (self._cmd.obj_id, self._cmd.obj_seq) in self._pending:
-            raise RespondError(
-                'request %d:%d already exists' % (self._cmd.obj_id, self._cmd.obj_seq)
+            raise RespondWithError(
+                'INTERNAL',
+                'request aready exists',
+                {
+                    'id': self._my_id,
+                    'obj_id': self._cmd.obj_id,
+                    'obj_seq': self._cmd.obj_seq,
+                    'chain': self._chain,
+                },
+                "Possible existence of simultaneous heads or " \
+                "old head didn't failover cleanly."
             )
 
         self._pending[(self._cmd.obj_id, self._cmd.obj_seq)] = self._cmd
@@ -231,9 +343,15 @@ class CallState(object):
         """Check that query command makes sense."""
 
         if not self._is_tail:
-            raise RespondError(
-                'query command not at tail, obj_id %s, chain: %s' % \
-                (self._cmd.obj_id, self._chain)
+            raise RespondWithError(
+                'INTERNAL',
+                'not allowed to answer query command',
+                {
+                    'id': self._my_id,
+                    'obj_id': self._cmd.obj_id,
+                    'chain': self._chain,
+                },
+                "Client/server configuration possibly inconsistent.",
             )
 
 
@@ -246,7 +364,7 @@ class Handler(object):
     """
 
     def __init__(self, my_id, store, call_interface, allow_dangerous_debugging):
-        self._logger = logging.getLogger('wade.chain')
+        self._logger = swailing.Logger(logging.getLogger('wade.chain'), 5, 100)
 
         self._my_id = my_id
         self._store = store

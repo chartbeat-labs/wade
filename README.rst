@@ -115,8 +115,10 @@ node applies the operation to the object.
 Two notes on terminology:
 
 1. We say that the command is *on its way in* or *entering* as it
-   traverses from head to tail, and *on its way out* or *exiting* as the
-   return moves from tail back to head.
+   traverses from head to tail, and *on its way out* or *exiting* as
+   the return moves from tail back to head. The next node on the way
+   in is an "inward" node, and the next node on the way out is an
+   "outward" node.
 
 2. In two-phase commit, the act of recording intent to write is called a
    *prepare*. The act of performing the write is called a *commit*.
