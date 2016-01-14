@@ -200,7 +200,8 @@ class CallState(object):
             return
 
         try:
-            max_seq = max(seq for obj_id, seq in self._pending.iterkeys())
+            max_seq = max(seq for obj_id, seq in self._pending.iterkeys()
+                          if obj_id == self._cmd.obj_id)
         except ValueError:
             max_seq = self._store.max_seq(self._cmd.obj_id)
         obj_seq = max_seq + 1
