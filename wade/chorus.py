@@ -19,7 +19,7 @@ from posix_ipc import BusyError
 from posix_ipc import Semaphore
 from posix_ipc import O_CREX
 
-from circular_buffer import ByteCircularBuffer
+from circular_buffer import CircularBuffer
 from circular_buffer import CircularBufferError
 
 
@@ -336,7 +336,7 @@ class Peer(object):
         self.peer_id = peer_id
         self.socket = socket
         self.incoming_buffer = msgpack.Unpacker()
-        self.outgoing_buffer = ByteCircularBuffer(OUTGOING_PEER_BUFFER_SIZE)
+        self.outgoing_buffer = CircularBuffer(OUTGOING_PEER_BUFFER_SIZE)
         self.outgoing_buffer_lock = threading.Lock()
 
     def close(self):
