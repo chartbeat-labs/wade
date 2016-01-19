@@ -8,16 +8,16 @@ peers.
 import logging
 import socket
 import threading
-import Queue
 from functools import partial
-from collections import defaultdict
 from collections import namedtuple
 from select import select
 
 
 import pyuv
 import msgpack
-from posix_ipc import Semaphore, O_CREX, BusyError
+from posix_ipc import BusyError
+from posix_ipc import Semaphore
+from posix_ipc import O_CREX
 
 from circular_buffer import ByteCircularBuffer
 from circular_buffer import CircularBufferError
@@ -357,8 +357,8 @@ class TimeoutLockError(Exception):
 class TimeoutLock(object):
     """Similar functionality to threading.Lock but allows specifying a timeout.
     We could use threading.Event objects to build the lock; however, python's
-    implementation busy waits when using timeouts with Events, introducing an
-    unacceptable delay when waiting for the Event. To avoid this issue we use
+    implementation busy waits when using timeouts, introducing an
+    unacceptable delay when waiting for them. To avoid this issue we use
     posix_ipc.Semaphore to back the lock.
 
     http://stackoverflow.com/questions/21779183/python-eventwait-with-timeout-gives-delay
