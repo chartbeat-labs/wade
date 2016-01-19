@@ -364,15 +364,15 @@ class TimeoutLock(object):
     http://stackoverflow.com/questions/21779183/python-eventwait-with-timeout-gives-delay
     """
     def __init__(self, timeout=None, name=None):
-        self.timeout = timeout
-        self.lock = Semaphore(name, flags=O_CREX)
+        self._timeout = timeout
+        self._lock = Semaphore(name, flags=O_CREX)
 
     def __del__(self):
         # If unlink isn't explicitly called the OS will *not* release the
         # semaphore object, even if the program crashes. We may want to spawn
         # a new process to manage them or give the semaphores known names when
         # creating them so they can be reclaimed on restart.
-        self.lock.unlink()
+        self._lock.unlink()
 
     def __enter__(self):
         self.acquire()
@@ -383,12 +383,12 @@ class TimeoutLock(object):
 
     def acquire(self, timeout=None):
         try:
-            self.lock.acquire(timeout or self.timeout)
+            self._lock.acquire(timeout or self._timeout)
         except BusyError:
-            raise TimeoutLockError(self.timeout)
+            raise TimeoutLockError(self._timeout)
 
     def release(self):
-        self.lock.release()
+        self._lock.release()
 
 
 class ValueEvent(object):
@@ -396,19 +396,19 @@ class ValueEvent(object):
     allows associating a value when "setting" (or notifying) the Event object.
     """
     def __init__(self):
-        self.value = None
-        self.event = TimeoutLock()
+        self._value = None
+        self._event = TimeoutLock()
 
     def wait_for_value(self, timeout, default_value):
         try:
-            self.event.acquire(timeout)
+            self._event.acquire(timeout)
         except TimeoutLockError:
             return default_value
-        return self.value
+        return self._value
 
     def set_value(self, value):
-        self.value = value
-        self.event.release()
+        self._value = value
+        self._event.release()
 
 
 class Client(object):
@@ -535,8 +535,7 @@ class Client(object):
         @return: ValueEvent
         """
         if not hasattr(self._threadlocal, 'event'):
-            value_event = ValueEvent()
-            self._threadlocal.event = value_event
+            self._threadlocal.event = ValueEvent()
         return self._threadlocal.event
 
     def _ensure_connection(self, peer_id, timeout=SOCKET_CREATION_TIMEOUT):

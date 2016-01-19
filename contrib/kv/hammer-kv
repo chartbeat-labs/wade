@@ -29,7 +29,7 @@ def process_updates(client, obj_ids, work, rand, value_length):
     for i in work:
         if rand:
             obj_id = random.choice(obj_ids)
-            key = get_random_string(10)
+            key = get_random_string(1)
             val = get_random_string(random.randint(1, value_length*2))
         else:
             obj_id = obj_ids[i % len(obj_ids)]
