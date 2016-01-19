@@ -1,6 +1,4 @@
-import threading
-import unittest
-import copy
+#!/usr/bin/env python
 
 
 class CircularBufferError(Exception):
