@@ -10,7 +10,7 @@ class CircularBufferTest(unittest.TestCase):
         ensures that the buffer empties
         """
 
-        n = 1024
+        n = 256
         cb = CircularBuffer(n)
         vals = range(n)
 
@@ -27,7 +27,7 @@ class CircularBufferTest(unittest.TestCase):
         # Check that the buffer is full.
         self.assertEqual(cb.available_data(), n)
         self.assertEqual(cb.available_space(), 0)
-        self.assertEqual(cb.peek_all(), vals)
+        self.assertEqual(cb.peek_all(), bytearray(vals))
 
         # Commit all elements except for the last one.
         for i in xrange(len(vals)-1):
@@ -40,12 +40,12 @@ class CircularBufferTest(unittest.TestCase):
         cb.commit_read(1)
         self.assertEqual(cb.available_data(), 0)
         self.assertEqual(cb.available_space(), n)
-        self.assertEqual(cb.peek_all(), [])
+        self.assertEqual(cb.peek_all(), bytearray())
 
     def test_half_empty_and_refill(self):
         """Fills up the buffer, commits half of it, verifies state, fills buffer
         and verifies again"""
-        n = 1024
+        n = 256
         cb = CircularBuffer(n)
         vals = range(n)
         reverse_vals = vals[::-1]
@@ -54,7 +54,7 @@ class CircularBufferTest(unittest.TestCase):
         cb.write(vals)
         self.assertEqual(cb.available_space(), 0)
         self.assertEqual(cb.available_data(), n)
-        self.assertEqual(cb.peek_all(), vals)
+        self.assertEqual(cb.peek_all(), bytearray(vals))
 
         # commit half of the data
         half = n/2
@@ -63,11 +63,11 @@ class CircularBufferTest(unittest.TestCase):
         # verify empty space
         self.assertEqual(cb.available_space(), half)
         self.assertEqual(cb.available_data(), half)
-        self.assertEqual(cb.peek_all(), vals[half:])
+        self.assertEqual(cb.peek_all(), bytearray(vals[half:]))
 
         # now fill buffer up again and verify data.
         cb.write(reverse_vals[:half])
-        self.assertEqual(cb.peek_all(), vals[half:] + reverse_vals[:half])
+        self.assertEqual(cb.peek_all(), bytearray(vals[half:] + reverse_vals[:half]))
 
         # verify it's full
         self.assertEqual(cb.available_space(), 0)

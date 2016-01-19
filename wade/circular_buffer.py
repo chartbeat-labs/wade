@@ -16,12 +16,12 @@ class CircularBuffer(object):
     implementation efficiently frees up space when commiting reads:
     http://c.learncodethehardway.org/book/ex44.html
     """
-    def __init__(self, capacity=10):
-        self.capacity = capacity
-        self.length = self.capacity + 1
-        self.data = [None] * self.length
-        self.start = 0
-        self.end = 0
+    def __init__(self, capacity):
+        self._capacity = capacity
+        self._length = self._capacity + 1
+        self._data = bytearray([0] * self._length)
+        self._start = 0
+        self._end = 0
 
     def __len__(self):
         return self.available_data()
@@ -31,7 +31,7 @@ class CircularBuffer(object):
                 (self.peek_all(),
                  self.available_data(),
                  self.available_space(),
-                 self.capacity)
+                 self._capacity)
 
     def _read(self, amount, commit):
         """Read up to amount and return a list. May return less data than
@@ -43,15 +43,15 @@ class CircularBuffer(object):
         if amount <= 0:
             raise CircularBufferError('Must request a positive amount of data')
         if not self.available_data():
-            return []
+            return bytearray()
         
         amount = min(amount, self.available_data())
-        read_end = self.start + amount
+        read_end = self._start + amount
 
-        if read_end < self.length:
-            ret = self.data[self.start:read_end]
+        if read_end < self._length:
+            ret = self._data[self._start:read_end]
         else:
-            ret = self.data[self.start:] + self.data[:(read_end - self.length)]
+            ret = self._data[self._start:] + self._data[:(read_end - self._length)]
         
         if commit:
             self.commit_read(amount)
@@ -59,26 +59,23 @@ class CircularBuffer(object):
         return ret
 
     def available_data(self):
-        if self.start <= self.end:
-            return self.end - self.start
-
-        return self.length - (self.start - self.end)
+        return (self._end - self._start) % self._length
 
     def available_space(self):
-        return self.capacity - self.available_data()
+        return self._capacity - self.available_data()
 
     def commit_read(self, amount):
-        self.start = (self.start + amount) % self.length
+        self._start = (self._start + amount) % self._length
 
     def commit_write(self, amount):
-        self.end = (self.end + amount) % self.length
+        self._end = (self._end + amount) % self._length
 
     def read(self, amount):
         return self._read(amount, commit=True)
 
     def read_all(self):
         if not self.available_data():
-            return []
+            return bytearray()
         return self.read(self.available_data())
 
     def peek(self, amount):
@@ -86,7 +83,7 @@ class CircularBuffer(object):
 
     def peek_all(self):
         if not self.available_data():
-            return []
+            return bytearray()
         return self.peek(self.available_data())
 
     def write(self, data):
@@ -100,15 +97,15 @@ class CircularBuffer(object):
                 'Not enough space: %d requested, %d available' % \
                 (amount, self.available_space()))
 
-        write_end = self.end + amount
+        write_end = self._end + amount
 
-        if write_end < self.length:  # if no wrap around
-            self.data[self.end:write_end] = data
+        if write_end < self._length:  # if no wrap around
+            self._data[self._end:write_end] = data
         else: # if wrap around
-            partition = self.length - self.end
+            partition = self._length - self._end
             end_block = data[:partition]
             start_block = data[partition:]
-            self.data[self.end:] = end_block  # write at end of buffer
-            self.data[:len(start_block)] = start_block  # write leftover at beginning
+            self._data[self._end:] = end_block  # write at end of buffer
+            self._data[:len(start_block)] = start_block  # write leftover at beginning
 
         self.commit_write(amount)
