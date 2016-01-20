@@ -35,7 +35,7 @@ class CircularBuffer(object):
         requested when amount > available_data(). It is the caller's
         responsibility to check the length of the returned result list.
 
-        @return: list(object)
+        @return: bytearray
         """
         if amount <= 0:
             raise CircularBufferError('Must request a positive amount of data')
@@ -84,9 +84,9 @@ class CircularBuffer(object):
         return self.peek(self.available_data())
 
     def write(self, data):
-        """Writes a list of objects into the buffer if it fits.
+        """Writes a string or bytes into the buffer if it fits.
 
-        @param data, list(object)
+        @param data, str or byte
         """
         amount = len(data)
         if amount > self.available_space():
