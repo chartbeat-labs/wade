@@ -17,6 +17,8 @@ import msgpack
 OK = 'ok'
 ERR = 'err'
 TIMEOUT = 'timeout'
+CALL_LIMIT = 'call_limit'
+PEER_DISCONNECT = 'peer_disconnect'
 
 
 class NodeError(Exception):
@@ -132,7 +134,7 @@ class Node(object):
 # Represents an outgoing connection.
 Outgoing = namedtuple(
     'Outgoing',
-    ['handle', 'packer', 'unpacker', 'remote_addr'],
+    ['handle', 'packer', 'unpacker', 'remote_addr', 'callbacks', 'timers'],
 )
 
 class CallInterface(object):
@@ -147,12 +149,12 @@ class CallInterface(object):
         self._loop = loop
         self._conf = {}
         self._req_counter = 0
-        self._callbacks = {} # map req_id -> defn callback(status, msg)
-        self._timers = {} # map req_id -> Timer
 
         self._outgoing = {} # map peer_id -> Outgoing
         self._outgoing_timer = pyuv.Timer(self._loop)
         self._outgoing_timer.start(self._outgoing_check_cb, 0, 1)
+
+        self._seemingly_arbitrary_max_request_limit = 10000
 
     def load_conf(self, conf):
         self._conf = conf
@@ -163,7 +165,7 @@ class CallInterface(object):
         for outgoing in self._outgoing.values():
             if not outgoing:
                 continue
-            outgoing.handle.close()
+            self._unwind_outgoing(outgoing)
 
     def queue_call(self, peer_id, message, callback, timeout=None):
         """Queues up a call to a peer.
@@ -174,17 +176,27 @@ class CallInterface(object):
         """
 
         outgoing = self._outgoing[peer_id]
+
+        in_flight = len(outgoing.callbacks)
+        if in_flight >= self._seemingly_arbitrary_max_request_limit:
+            callback(
+                CALL_LIMIT,
+                'can not exceed %d simultaneous call requests' % in_flight,
+            )
+            return
+
         req_id = self._req_counter
         self._req_counter += 1
-        self._callbacks[req_id] = callback
+        outgoing.callbacks[req_id] = callback
 
-        timeout_timer = pyuv.Timer(self._loop)
-        self._timers[req_id] = timeout_timer
-        timeout_timer.start(
-            partial(self._call_timeout_cb, peer_id, req_id),
-            timeout=timeout,
-            repeat=0,
-        )
+        if timeout:
+            timeout_timer = pyuv.Timer(self._loop)
+            outgoing.timers[req_id] = timeout_timer
+            timeout_timer.start(
+                partial(self._call_timeout_cb, peer_id, req_id),
+                timeout=timeout,
+                repeat=0,
+            )
 
         outgoing.handle.write(outgoing.packer.pack([req_id, message]))
 
@@ -253,6 +265,8 @@ class CallInterface(object):
             msgpack.Packer(),
             msgpack.Unpacker(),
             self._conf[peer_id],
+            {},
+            {},
         )
 
         tcp_handle.start_read(partial(self._outgoing_read_cb, peer_id))
@@ -261,37 +275,49 @@ class CallInterface(object):
     def _outgoing_read_cb(self, peer_id, tcp_handle, data, error):
         """Called on receipt of response from a call to a peer."""
 
+        outgoing = self._outgoing[peer_id]
+
         if error is not None:
-            tcp_handle.close()
+            callbacks = outgoing.callbacks.values()
+            self._unwind_outgoing(outgoing)
             del self._outgoing[peer_id]
+
+            for cb in callbacks:
+                cb(PEER_DISCONNECT, None)
             return
 
-        outgoing = self._outgoing[peer_id]
         outgoing.unpacker.feed(data)
         for payload in outgoing.unpacker:
             req_id, status, message = payload
-            callback = self._callbacks.get(req_id)
-            timer = self._timers.get(req_id)
+            callback = outgoing.callbacks.get(req_id)
+            timer = outgoing.timers.get(req_id)
 
             if timer is not None:
                 timer.stop()
-                del self._timers[req_id]
+                del outgoing.timers[req_id]
 
             if callback is not None:
-                del self._callbacks[req_id]
+                del outgoing.callbacks[req_id]
                 callback(status, message)
 
     def _call_timeout_cb(self, peer_id, req_id, timeout_handle):
-        """Called at timeout period specified by user into queue_call. This cb
-        is always called, even if the request completed.
+        """Called at timeout period specified by user into queue_call."""
 
-        """
+        outgoing = self._outgoing[peer_id]
+
         timeout_handle.stop()
-        callback = self._callbacks.get(req_id)
-        if callback is None:
-            return
-        del self._callbacks[req_id]
-        callback(TIMEOUT, None)
+        try:
+            callback = outgoing.callbacks[req_id]
+            del outgoing.callbacks[req_id]
+            del outgoing.timers[req_id]
+            callback(TIMEOUT, None)
+        except KeyError:
+            pass
+
+    def _unwind_outgoing(self, outgoing):
+        for timer in outgoing.timers.values():
+            timer.stop()
+        outgoing.handle.close()
 
 
 class ClientError(Exception):

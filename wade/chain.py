@@ -66,9 +66,9 @@ class CallState(object):
     calculates some useful derived properties.
 
     2. Prepare: Adds command to pending set and forwards to next node
-    in chain if necessary. If not then skips to commit. A response or
-    timeout from the successor transitions us appropriately to commit
-    or finalize.
+    in chain if necessary. If not then skips to commit. A response
+    from the successor transitions us appropriately to commit or
+    finalize.
 
     3. Commit: Applies the op if it's an update, or generates a
     response if it's a query. Manipulates pending set then returns
@@ -167,7 +167,6 @@ class CallState(object):
                 self._inward_node_id,
                 self._cmd._asdict(),
                 self.state_commit,
-                timeout=1.0,
             )
         else:
             self._inward_node_id = None
@@ -181,13 +180,13 @@ class CallState(object):
 
         try:
             if status != chorus.OK:
-                if status == chorus.TIMEOUT:
-                    hint = "Inward node unavailable or under high load."
-                else:
-                    if self._inward_node_id is not None:
-                        hint = "Check inward node's error logs."
-                    else:
-                        hint = "Not sure."
+                hints = []
+                if status == chorus.PEER_DISCONNECT:
+                    hints.append("Inward node possibly disconnected or died.")
+                if self._inward_node_id is not None:
+                    hints.append("Check inward node's error logs.")
+                if not hints:
+                    hints = ["Not sure."]
 
                 raise RespondWithError(
                     'FORWARD',
@@ -195,9 +194,12 @@ class CallState(object):
                     {
                         'id': self._my_id,
                         'inward_node_id': self._inward_node_id,
-                        'code': message,
+                        'obj_id': self._cmd.obj_id,
+                        'obj_seq': self._cmd.obj_seq,
+                        'status': status,
+                        'message': message,
                     },
-                    hint,
+                    ' '.join(hints),
                 )
 
             if self._func._op_type == UPDATE_OP:
@@ -212,8 +214,8 @@ class CallState(object):
                             'current': cur_seq,
                             'attempt': self._cmd.obj_seq,
                         },
-                        "Previous update to inward node may have timed out " \
-                        "or client/server have inconsistent configurations.",
+                        "Previous update may have aborted mid-chain or " \
+                        "client/server have inconsistent configurations.",
                     )
 
             ret = self._func(
