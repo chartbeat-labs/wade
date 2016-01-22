@@ -347,68 +347,45 @@ class Peer(object):
         self.socket.close()
 
 
-class TimeoutLockError(Exception):
+class ValueEventTimeout(Exception):
     def __init__(self, timeout):
-        super(TimeoutLockError, self).__init__(
-            'attempt to acquire lock timed out after %s s' % timeout
+        super(ValueEventTimeout, self).__init__(
+            'Attempt to wait for ValueEvent timed out after %s s' % timeout
         )
 
 
-class TimeoutLock(object):
-    """Similar functionality to threading.Lock but allows specifying a timeout.
-    We could use threading.Event objects to build the lock; however, python's
-    implementation busy waits when using timeouts, introducing an
-    unacceptable delay when waiting for them. To avoid this issue we use
-    posix_ipc.Semaphore to back the lock.
+class ValueEvent(object):
+    """Provides behavior similar to threading.Event. However, this
+    allows associating a value when "setting" (or notifying) the Event object.
+
+    Additionally, Python's threading.Event object provides a timeout feature
+    like ours but introduces unacceptable delays. For that reason we use
+    posix_ipc.Semaphore to mimic threading.Event without the performance
+    penalty.
 
     http://stackoverflow.com/questions/21779183/python-eventwait-with-timeout-gives-delay
     """
-    def __init__(self, timeout=None, name=None):
-        self._timeout = timeout
-        self._lock = Semaphore(name, flags=O_CREX)
+    def __init__(self):
+        self._value = None
+        self._semaphore = Semaphore(name, flags=O_CREX)
 
     def __del__(self):
         # If unlink isn't explicitly called the OS will *not* release the
         # semaphore object, even if the program crashes. We may want to spawn
         # a new process to manage them or give the semaphores known names when
         # creating them so they can be reclaimed on restart.
-        self._lock.unlink()
+        self._semaphore.unlink()
 
-    def __enter__(self):
-        self.acquire()
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        self.release()
-        return False # any exceptions will be raised.
-
-    def acquire(self, timeout=None):
+    def wait_for_value(self, timeout):
         try:
-            self._lock.acquire(timeout or self._timeout)
+            self._semaphore.acquire(timeout)
         except BusyError:
-            raise TimeoutLockError(self._timeout)
-
-    def release(self):
-        self._lock.release()
-
-
-class ValueEvent(object):
-    """Provides behavior similar to threading.Event. However, this
-    allows associating a value when "setting" (or notifying) the Event object.
-    """
-    def __init__(self):
-        self._value = None
-        self._event = TimeoutLock()
-
-    def wait_for_value(self, timeout, default_value):
-        try:
-            self._event.acquire(timeout)
-        except TimeoutLockError:
-            return default_value
+            raise ValueEventTimeout(timeout)
         return self._value
 
     def set_value(self, value):
         self._value = value
-        self._event.release()
+        self._semaphore.release()
 
 
 class Client(object):
@@ -435,9 +412,11 @@ class Client(object):
         # For reuse of ValueEvent objects by a thread.
         self._threadlocal = threading.local()
         
-        bg_thread = threading.Thread(target=self._process_requests_in_background)
-        bg_thread.setDaemon(True)
-        bg_thread.start()
+        self._bg_thread = threading.Thread(
+            target=self._process_requests_in_background
+        )
+        self._bg_thread.setDaemon(True)
+        self._bg_thread.start()
 
     def _bg_clean_up_peer(self, peer):
         """Remove peer and associated sockets from _peers and _sock_to_peer.
@@ -581,7 +560,6 @@ class Client(object):
         req_id = self._inc_req_count()
         peer = self._ensure_connection(peer_id)
         value_event = self._ensure_value_event()
-        timeout_resp = (ERR, 'request timed out after %s s' % (timeout))
         outgoing_bytes = self._packer.pack([req_id, message])
 
         with self._pending_requests_lock:
@@ -590,7 +568,12 @@ class Client(object):
         with peer.outgoing_buffer_lock:
             peer.outgoing_buffer.write(outgoing_bytes)
 
-        status, message = value_event.wait_for_value(timeout, timeout_resp)        
+        try:
+            status, message = value_event.wait_for_value(timeout)
+        except ValueEventTimeout:
+            status = TIMEOUT
+            message = 'request timed out after %s s' % (timeout)
+
         with self._pending_requests_lock:
             del self._pending_requests[req_id]
 
