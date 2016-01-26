@@ -540,9 +540,11 @@ class Client(object):
 
         @return: ValueEvent
         """
-        if not getattr(self._threadlocal, 'event', None):
-            self._threadlocal.event = ValueEvent()
-        return self._threadlocal.event
+        ev = getattr(self._threadlocal, 'event', None)
+        if ev is None:
+            ev = ValueEvent()
+            self._threadlocal.event = ev
+        return ev
 
     def _ensure_connection(self, peer_id, timeout=SOCKET_CREATION_TIMEOUT):
         """Connects to the peer's socket and creates a Peer object.
