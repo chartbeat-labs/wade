@@ -1,17 +1,9 @@
 TODO
 ----
 
-- Stores should be able to set up periodic functions, to perform
-  maintenance such as TTLs and object gc (removing object data on
-  nodes that are no longer involved in its chain).
-
 - Dogtag stats.
 
 - Implement fast/full sync and read/write pauses.
-
-- We create a Timer for every single call that has a timeout. The
-  Timer object lives on even if the call completes. I'm guessing
-  that's horrendously bad and needs a good fixing.
 
 - Implement overlord framework. See "chain configuration" below.
 

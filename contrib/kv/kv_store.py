@@ -2,6 +2,7 @@
 """Naive in-memory KV store definition."""
 
 
+import logging
 from collections import defaultdict
 
 from wade import chain
@@ -11,6 +12,7 @@ class Store(chain.Store):
     def __init__(self):
         self._data = defaultdict(dict)
         self._seq_map = defaultdict(int)
+        self._logger = logging.getLogger('kv_store')
 
     def serialize_obj(self, obj_id):
         return [self._data[obj_id], self._seq_map[obj_id]]
@@ -34,3 +36,9 @@ class Store(chain.Store):
     def GET(self, obj_id, obj_seq, args):
         k = args['k']
         return self._data[obj_id].get(k)
+
+    @chain.periodic_op(10)
+    def HEARTBEAT(self):
+        # in a proper kv implementation we might expire TTLs here or
+        # do other cleanup
+        self._logger.info('heartbeat')
