@@ -36,5 +36,5 @@ if __name__ == '__main__':
     args = parser.parse_args()
     conf = yaml.load(open(args.conf, 'r').read())
 
-    chain_client = chain.Client(conf)
+    chain_client = chain.Client(conf, 0.1)
     print args.func(chain_client, args, conf)

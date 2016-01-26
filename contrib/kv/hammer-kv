@@ -1,29 +1,112 @@
 #!/usr/bin/env python
 
-import time
 import argparse
+import random
+import string
+import time
+import threading
 
 import yaml
 from wade import chain
+from wade import chorus
+
+chars = string.letters + string.digits
+
+
+def partition(lst, n):
+    '''Partition lst into n chunks.
+    '''
+    q, r = divmod(len(lst), n)
+    indices = [q*i + min(i, r) for i in xrange(n+1)]
+    return [lst[indices[i]:indices[i+1]] for i in xrange(n)]
+
+
+def get_random_string(length):
+    return ''.join(random.choice(chars) for _ in xrange(length))
+
+
+def process_updates(client, obj_ids, work, rand, value_length):
+    for i in work:
+        if rand:
+            obj_id = random.choice(obj_ids)
+            key = get_random_string(1)
+            val = get_random_string(random.randint(1, value_length*2))
+        else:
+            obj_id = obj_ids[i % len(obj_ids)]
+            key = 'foo'
+            val = 'bar%d' % i
+
+        status, message = client.update(
+            'SET',
+            obj_id,
+            {'k': key, 'v': val},
+            'random'
+        )
+
+        if status != chorus.OK:
+            print status, message
+
+
+def process_updates_multithreaded(client,
+                                  obj_ids,
+                                  num,
+                                  num_workers,
+                                  rand,
+                                  value_length):
+    partitioned_work = partition(range(num), num_workers)
+    workers = [
+        threading.Thread(target=process_updates,
+                         args=(client, obj_ids, work, rand, value_length))
+        for work in partitioned_work
+    ]
+
+    for worker in workers:
+        worker.start()
+
+    for worker in workers:
+        worker.join()
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='kv hammer')
+    parser = argparse.ArgumentParser(description='multithreaded kv hammer')
     parser.add_argument('--conf', type=str, required=True,
                         help='cluster config')
     parser.add_argument('--num', type=int, required=True,
-                        help='number of writes to run')
+                        help='number of writes to run in total')
+    parser.add_argument('--workers', type=int, required=False, default=1,
+                        help='number of worker threads to run, 0 ' \
+                             'spawns a thread per object id.')
+    parser.add_argument('--random', type=bool, required=False, default=False,
+                        help="workers choose random obj_ids, k's, and v's")
+    parser.add_argument('--value-length', type=int, required=False, default=20,
+                        help='When random enabled, choose average value length. Samples from uniform distribution on [1, 2*value_length]')
     args = parser.parse_args()
 
     conf = yaml.load(open(args.conf, 'r').read())
-    c = chain.Client(conf)
     obj_ids = conf['chain_map'].keys()
+    num_workers = args.workers if args.workers != 0 else len(obj_ids)
+    c = chain.Client(conf, 0.1)
+
+    print 'Processing %d messages with %d worker(s)...' % (args.num, num_workers)
 
     st_time = time.time()
-    for i in xrange(args.num):
-        obj_id = obj_ids[i % len(obj_ids)]
-        c.update('SET', obj_id, { 'k': 'foo', 'v': 'bar%d' % i }, 'hammer-kv')
+
+    if num_workers == 1:
+        process_updates(c,
+                        obj_ids,
+                        range(args.num),
+                        args.random,
+                        args.value_length)
+    else:
+        process_updates_multithreaded(c,
+                                      obj_ids,
+                                      args.num,
+                                      num_workers,
+                                      args.random,
+                                      args.value_length)
 
     diff_time = time.time() - st_time
-    print 'wrote %d messages/sec over %d secs' % \
-        (args.num / diff_time, diff_time)
+    print 'wrote %d messages/sec over %d secs with %d workers' % \
+        (args.num / diff_time, diff_time, num_workers)
+
+    c.close()

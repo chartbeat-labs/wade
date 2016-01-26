@@ -126,7 +126,7 @@ if __name__ == '__main__':
     hostname = socket.gethostname()
     debug_tag = "%s@%s" % (username, hostname)
 
-    c = chain.Client(conf)
+    c = chain.Client(conf, 0.1)
     print json.dumps(
         c.special_op(peer_id, op_name, args, debug_tag),
         sort_keys=True,
