@@ -56,6 +56,9 @@ class Node(object):
         self._call_interface = call_interface
         self._call_handler = call_handler
 
+        self._periodics = []
+        self._setup_periodics()
+
         self._incoming = {}
         self._incoming_server = pyuv.TCP(self._loop)
         self._incoming_server.bind(('0.0.0.0', self._port))
@@ -65,6 +68,7 @@ class Node(object):
         """Shuts down and unregisters everything from the loop."""
 
         self._incoming_server.close()
+        self._unwind_periodics()
         for c in self._incoming.keys():
             c.close()
 
@@ -128,6 +132,23 @@ class Node(object):
 
         data = incoming.packer.pack([req_id, status, message])
         resp_address.write(data)
+
+    def _setup_periodics(self):
+        for period, C in self._call_handler.get_periodics():
+            timer = pyuv.Timer(self._loop)
+            self._periodics.append(timer)
+
+            # pyuv timers expect an arg, but we don't require that of
+            # chorus periodics
+            actual = lambda timer: C()
+            timer.start(actual, 0, period)
+
+    def _unwind_periodics(self):
+        for timer in self._periodics:
+            timer.stop()
+            del timer
+
+        self._periodics = []
 
 
 # Represents an outgoing connection.

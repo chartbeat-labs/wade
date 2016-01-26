@@ -434,6 +434,17 @@ class Handler(object):
         self._conf = conf
         self._chain_map = self._conf['chain_map']
 
+    def get_periodics(self):
+        """Returns a list of (period, callable) tuples of things to run on a
+        periodic basis.
+
+        The underlying transport mechanism is responsible for calling
+        the callables every period or more seconds.
+
+        """
+
+        return self._store.get_periodic_ops()
+
 
 def reload_config_op(handler, call_interface, logger, cmd, resp):
     conf = cmd.args.get('conf')
@@ -497,6 +508,7 @@ def inject_code_op(handler, logger, cmd, cont):
 
 UPDATE_OP = 1
 QUERY_OP = 2
+PERIODIC_OP = 3
 
 def update_op(func):
     """Update (mutating) op."""
@@ -513,6 +525,21 @@ def query_op(func):
     func._op_name = func.__name__
 
     return func
+
+def periodic_op(period):
+    """Periodic op.
+
+    Period is in seconds.
+
+    """
+
+    def inner(func):
+        func._op_type = PERIODIC_OP
+        func._op_name = func.__name__
+        func._op_period = period
+        return func
+
+    return inner
 
 class Store(object):
     """Abstract class for a store of object states.
@@ -553,6 +580,13 @@ class Store(object):
             return func
 
         return None
+
+    def get_periodic_ops(self):
+        """Returns sequence of (period, func) ops."""
+
+        for func in [getattr(self, name) for name in dir(self)]:
+            if getattr(func, '_op_type', None) == PERIODIC_OP:
+                yield (func._op_period, func)
 
 
 class Client(object):
