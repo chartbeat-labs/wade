@@ -4,7 +4,9 @@
 
 import json
 import logging
+import socket
 import traceback
+from collections import defaultdict
 from collections import namedtuple
 from functools import partial
 
@@ -26,7 +28,6 @@ Command = namedtuple('Command',
                          'args',      # anything, arguments for op
                          'debug_tag', # prefix string for debug output
                      ])
-
 
 
 class RespondWithError(Exception):
@@ -51,10 +52,8 @@ class RespondWithError(Exception):
 
     def log(self, logger):
         logger.primary(self.primary)
-        info = { '_primary': self.primary }
-        info.update(self.detail)
-        logger.detail('DETAIL: %s' % json.dumps(info))
-        logger.hint('HINT: %s' % self.hint)
+        logger.detail(self.detail)
+        logger.hint(self.hint)
 
 
 class CallState(object):
@@ -87,6 +86,7 @@ class CallState(object):
             store,
             logger,
             accept_updates,
+            accept_updates_by_chain,
     ):
         self._my_id = my_id
         self._call_peer = call_peer
@@ -97,6 +97,9 @@ class CallState(object):
         self._store = store
         self._logger = logger
         self._accept_updates = accept_updates
+        self._accept_updates_by_chain = accept_updates_by_chain
+
+        self._func = None
 
     def state_sanitize(self):
         """Check command makes sense and pre-calculate some useful
@@ -105,17 +108,21 @@ class CallState(object):
         """
 
         try:
-            self._func = self._store.get_op(self._cmd.op)
-            if not self._func:
-                raise RespondWithError(
-                    'INTERNAL',
-                    "undefined op: %s" % self._cmd.op,
-                    {
-                        'id': self._my_id,
-                        'op': self._cmd.op,
-                    },
-                    "Client and node versions possibly differ.",
-                )
+            if self._cmd.op == 'FULL_SYNC':
+                self._op_type = SYNC_OP
+            else:
+                self._func = self._store.get_op(self._cmd.op)
+                self._op_type = self._func._op_type
+                if not self._func:
+                    raise RespondWithError(
+                        'INTERNAL',
+                        "undefined op: %s" % self._cmd.op,
+                        {
+                            'id': self._my_id,
+                            'op': self._cmd.op,
+                        },
+                        "Client and node versions possibly differ.",
+                    )
 
             self._chain = self._chain_map.get(self._cmd.obj_id)
             if not self._chain:
@@ -136,12 +143,11 @@ class CallState(object):
             self._obj_seq_assigned = self._cmd.obj_seq != -1
             self._inward_node_id = None
 
-            if self._func._op_type == UPDATE_OP:
+            if self._op_type == UPDATE_OP:
                 self._check_update()
                 self._assign_obj_seq()
                 self._add_to_pending()
-
-            if self._func._op_type == QUERY_OP:
+            elif self._op_type == QUERY_OP:
                 self._check_query()
         except RespondWithError as resp:
             self._remove_from_pending()
@@ -157,8 +163,12 @@ class CallState(object):
         directly to commit.
 
         """
+        # If a sync command traverses a chain it disables updates for that chain
+        # on the way in.
+        if self._op_type == SYNC_OP:
+            self._accept_updates_by_chain[self._cmd.obj_id] = False
 
-        if self._func._op_type == UPDATE_OP and not self._is_tail:
+        if self._op_type in (UPDATE_OP, SYNC_OP) and not self._is_tail:
             # update not at tail, so forward
             my_index = self._chain.index(self._my_id)
             self._inward_node_id = self._chain[my_index + 1]
@@ -202,7 +212,27 @@ class CallState(object):
                     ' '.join(hints),
                 )
 
-            if self._func._op_type == UPDATE_OP:
+            if self._op_type == SYNC_OP:
+                # At the tail serialize object state. At other nodes overwrite
+                # object. All nodes forward state to outer nodes.
+                if self._is_tail:
+                    ret = self._store.serialize_obj(self._cmd.obj_id)
+                else:
+                    ret = message
+                    self._store.deserialize_obj(self._cmd.obj_id, value=ret)
+
+                # Forward the object state to outer nodes but at the head
+                # return OK to the chain.Client.
+                if self._is_head:
+                    ret = "successful full sync for chain %s, "\
+                          "updates reenabled on this chain" % self._cmd.obj_id
+
+                # Drop all pending commits for this object id and reenable
+                # updates.
+                self._remove_from_pending(all_sequences=True)
+                self._accept_updates_by_chain[self._cmd.obj_id] = True
+
+            elif self._op_type == UPDATE_OP:
                 cur_seq = self._store.max_seq(self._cmd.obj_id)
                 if self._cmd.obj_seq != cur_seq + 1:
                     self._remove_from_pending()
@@ -213,16 +243,18 @@ class CallState(object):
                             'id': self._my_id,
                             'current': cur_seq,
                             'attempt': self._cmd.obj_seq,
+                            'obj_id': self._cmd.obj_id,
                         },
                         "Previous update may have aborted mid-chain or " \
                         "client/server have inconsistent configurations.",
                     )
 
-            ret = self._func(
-                self._cmd.obj_id,
-                self._cmd.obj_seq,
-                self._cmd.args,
-            )
+            if self._op_type in (QUERY_OP, UPDATE_OP):
+                ret = self._func(
+                    self._cmd.obj_id,
+                    self._cmd.obj_seq,
+                    self._cmd.args,
+                )
         except RespondWithError as resp:
             with self._logger.error() as logger:
                 resp.log(logger)
@@ -254,10 +286,22 @@ class CallState(object):
         if not self._accept_updates:
             raise RespondWithError(
                 'INTERNAL',
-                'not accepting updates',
+                'not accepting updates on node',
                 {
                     'id': self._my_id,
                     'accept_updates': self._accept_updates,
+                },
+                "Previously received command to stop accepting updates.",
+            )
+
+        if not self._accept_updates_by_chain[self._cmd.obj_id]:
+            raise RespondWithError(
+                'INTERNAL',
+                'not accepting updates for obj_id',
+                {
+                    'id': self._my_id,
+                    'obj_id': self._cmd.obj_id,
+                    'accept_updates': self._accept_updates_by_chain[self._cmd.obj_id],
                 },
                 "Previously received command to stop accepting updates.",
             )
@@ -306,7 +350,7 @@ class CallState(object):
 
         try:
             max_seq = max(seq for obj_id, seq in self._pending.iterkeys()
-                          if obj_id == self._cmd.obj_id)
+                              if obj_id == self._cmd.obj_id)
         except ValueError:
             max_seq = self._store.max_seq(self._cmd.obj_id)
         obj_seq = max_seq + 1
@@ -331,15 +375,26 @@ class CallState(object):
                 "old head didn't failover cleanly."
             )
 
-        self._pending[(self._cmd.obj_id, self._cmd.obj_seq)] = self._cmd
+        self._pending[(self._cmd.obj_id, self._cmd.obj_seq)] = self
 
-    def _remove_from_pending(self):
+    def _remove_from_pending(self, all_sequences=False):
         """Remove command from pending set."""
-
-        try:
-            del self._pending[(self._cmd.obj_id, self._cmd.obj_seq)]
-        except KeyError:
-            pass
+        if not all_sequences:
+            key = (self._cmd.obj_id, self._cmd.obj_seq)
+            self._logger.debug('removing %s from pending set', key)
+            try:
+                del self._pending[key]
+            except KeyError:
+                pass
+        else:
+            for key in self._pending.keys():
+                curr_obj_id, _ = key
+                if curr_obj_id == self._cmd.obj_id:
+                    self._logger.debug('removing %s from pending set', key)
+                    try:
+                        del self._pending[key]
+                    except KeyError:
+                        pass
 
     def _check_query(self):
         """Check that query command makes sense."""
@@ -366,7 +421,10 @@ class Handler(object):
     """
 
     def __init__(self, my_id, store, call_interface, allow_dangerous_debugging):
-        self._logger = swailing.Logger(logging.getLogger('wade.chain'), 5, 100)
+        self._logger = swailing.Logger(logging.getLogger('wade.chain'),
+                                       5,
+                                       100,
+                                       structured_detail=True)
 
         self._my_id = my_id
         self._store = store
@@ -376,6 +434,7 @@ class Handler(object):
         self._chain_map = {}
         self._conf = {}
         self._accept_updates = True
+        self._accept_updates_by_chain = defaultdict(lambda: True) # obj_id -> bool
         self._allow_dangerous_debugging = allow_dangerous_debugging
 
         # special ops tell the node to do something, such as stop
@@ -396,8 +455,11 @@ class Handler(object):
                 }
             )
 
-    def set_accept_updates(self, accept_updates):
-        self._accept_updates = accept_updates
+    def set_accept_updates(self, accept_updates, obj_id=None):
+        if obj_id:
+            self._accept_updates_by_chain[obj_id] = accept_updates
+        else:
+            self._accept_updates = accept_updates
 
     def __call__(self, resp, call_peer, raw_cmd):
         try:
@@ -427,6 +489,7 @@ class Handler(object):
             self._store,
             self._logger,
             self._accept_updates,
+            self._accept_updates_by_chain,
         )
         state.state_sanitize()
 
@@ -459,14 +522,23 @@ def reload_config_op(handler, call_interface, logger, cmd, resp):
 
 def set_accept_updates_op(handler, logger, cmd, resp):
     accept_updates = cmd.args.get('accept_updates')
+    obj_id = cmd.args.get('obj_id')
+
     if accept_updates is None or not isinstance(accept_updates, bool):
         raise ValueError('accept_updates is a required boolean param')
 
-    if accept_updates:
-        logger.warning('setting node to accept updates')
+    if obj_id:
+        if accept_updates:
+            logger.warning('setting chain/obj %s to accept updates', obj_id)
+        else:
+            logger.warning('setting chain/obj %s to reject updates', obj_id)
+        handler.set_accept_updates(accept_updates, obj_id=obj_id)
     else:
-        logger.warning('setting node to not accept updates')
-    handler.set_accept_updates(accept_updates)
+        if accept_updates:
+            logger.warning('setting node to accept updates')
+        else:
+            logger.warning('setting node to not accept updates')
+        handler.set_accept_updates(accept_updates)
 
     resp(chorus.OK, 'OK')
 
@@ -509,6 +581,7 @@ def inject_code_op(handler, logger, cmd, cont):
 UPDATE_OP = 1
 QUERY_OP = 2
 PERIODIC_OP = 3
+SYNC_OP = 4
 
 def update_op(func):
     """Update (mutating) op."""
@@ -610,10 +683,13 @@ class Client(object):
     def query(self, op_name, obj_id, args, debug_tags):
         return self._call('QUERY', op_name, obj_id, args, debug_tags)
 
+    def full_sync(self, obj_id, debug_tags='sync'):
+        return self._call('SYNC', 'FULL_SYNC', obj_id, {}, debug_tags)
+
     def _call(self, op_type, op_name, obj_id, args, debug_tag):
         """Sends command to cluster."""
 
-        if op_type == 'UPDATE':
+        if op_type in ('UPDATE', 'SYNC'):
             peer_index = 0
         if op_type == 'QUERY':
             peer_index = -1
@@ -641,8 +717,10 @@ class Client(object):
         else:
             peer_ids = [peer_id]
 
-        return { peer_id:
-                 self._chorus_client.reqrep(
+        resps = {}
+        for peer_id in peer_ids:
+            try:
+                resps[peer_id] = self._chorus_client.reqrep(
                      peer_id,
                      {
                          'obj_id': None,
@@ -650,5 +728,9 @@ class Client(object):
                          'op': op_name,
                          'args': args,
                          'debug_tag': tag,
-                     })
-                 for peer_id in peer_ids }
+                     }
+                )
+            except socket.error:
+                resps[peer_id] = 'could not connect to peer'
+
+        return resps
