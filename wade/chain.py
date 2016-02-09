@@ -446,6 +446,7 @@ class Handler(object):
             '.GET_CONFIG': lambda cmd, resp: resp(chorus.OK, self._conf),
             '.SET_ACCEPT_UPDATES': partial(set_accept_updates_op, self, self._logger),
             '.HEARTBEAT': lambda cmd, resp: resp(chorus.OK, 'OK'),
+            '.OBJ_CHECKSUM': partial(obj_checksum_op, self._store, self._logger),
         }
 
         if self._allow_dangerous_debugging:
@@ -579,6 +580,15 @@ def inject_code_op(handler, logger, cmd, cont):
     cont(chorus.OK, response)
 
 
+def obj_checksum_op(store, logger, cmd, cont):
+    obj_id = cmd.args.get('obj_id')
+    if obj_id is None:
+        raise ValueError('obj_id is required')
+
+    logger.warning('computing checksum for obj_id %s', obj_id)
+    cont(chorus.OK, {'checksum': store.obj_checksum(obj_id)})
+
+
 UPDATE_OP = 1
 QUERY_OP = 2
 PERIODIC_OP = 3
@@ -646,6 +656,9 @@ class Store(object):
         raise NotImplementedError()
 
     def max_seq(self, obj_id):
+        raise NotImplementedError()
+
+    def obj_checksum(self, obj_id):
         raise NotImplementedError()
 
     def get_op(self, op_name):
