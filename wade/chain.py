@@ -5,6 +5,7 @@
 import json
 import logging
 import socket
+import threading
 import traceback
 from collections import defaultdict
 from collections import namedtuple
@@ -718,19 +719,34 @@ class Client(object):
             peer_ids = [peer_id]
 
         resps = {}
+        resps_lock = threading.Lock()
+        req_threads = []
+
+        # make requests asynchronously to all peers. Timeouts handled by client.
         for peer_id in peer_ids:
-            try:
-                resps[peer_id] = self._chorus_client.reqrep(
-                     peer_id,
-                     {
-                         'obj_id': None,
-                         'obj_seq': None,
-                         'op': op_name,
-                         'args': args,
-                         'debug_tag': tag,
-                     }
-                )
-            except socket.error:
-                resps[peer_id] = 'could not connect to peer'
+            def make_request(p_id):
+                try:
+                    r = self._chorus_client.reqrep(
+                         p_id,
+                         {
+                             'obj_id': None,
+                             'obj_seq': None,
+                             'op': op_name,
+                             'args': args,
+                             'debug_tag': tag,
+                         }
+                    )
+                except socket.error:
+                    r = 'could not connect to peer'
+
+                with resps_lock:
+                    resps[p_id] = r
+
+            t = threading.Thread(target=make_request, args=(peer_id,))
+            req_threads.append(t)
+            t.start()
+
+        for t in req_threads:
+            t.join()
 
         return resps
