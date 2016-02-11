@@ -30,10 +30,7 @@ PEER_DISCONNECT = 'peer_disconnect'
 TIMEOUT = 'timeout'
 RECV_BYTES = 1024 * 64
 SEND_BYTES = 1024 * 64
-
-OUTGOING_PEER_BUFFER_SIZE = 1024 ** 2
-"""1 MB, this controls the max size of a request that can be sent to WADE."""
-
+OUTGOING_PEER_BUFFER_SIZE = 1024 ** 2 # 1 MB, controls max request size
 SOCKET_CREATION_TIMEOUT = 1
 SELECT_TIMEOUT = 1 # timeout for select.select
 
