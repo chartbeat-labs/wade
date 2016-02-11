@@ -12,7 +12,6 @@ from functools import partial
 from collections import namedtuple
 from select import select
 
-
 import pyuv
 import msgpack
 from posix_ipc import BusyError
@@ -361,7 +360,7 @@ class Peer(object):
         with self.lock:
             req_id, status, message = response
             if req_id in self.pending_requests: # request may have timed out
-                self.pending_requests[req_id].set_value((status, message))
+                self.pending_requests[req_id].set((status, message))
 
     def remove_request(self, req_id):
         with self.lock:
@@ -384,9 +383,8 @@ class ValueEvent(object):
     on the value (but does not set it), and the writing thread sets the value
     then triggers the event. In other words, there is exactly one write to the
     value from one thread, and one read from a different thread, and the
-    ValueEvent object guarantees they don't overlap so long as the
-    wait_for_value and set_value methods are used by the reading and writing
-    thread, respectively.
+    ValueEvent object guarantees they don't overlap so long as the get and set
+    methods are used by the reading and writing thread, respectively.
 
     Additionally, Python's threading.Event object provides a timeout feature
     like ours but introduces unacceptable delays. For that reason we use
@@ -406,14 +404,14 @@ class ValueEvent(object):
         # creating them so they can be reclaimed on restart.
         self._semaphore.unlink()
 
-    def wait_for_value(self, timeout):
+    def get(self, timeout):
         try:
             self._semaphore.acquire(timeout)
         except BusyError:
             raise ValueEventTimeout(timeout)
         return self._value
 
-    def set_value(self, value):
+    def set(self, value):
         self._value = value
         self._semaphore.release()
 
@@ -439,12 +437,44 @@ class Client(object):
 
         # For reuse of ValueEvent objects by a thread.
         self._threadlocal = threading.local()
-        
+
+        self._patch_client_for_gevent()
+
         self._bg_thread = threading.Thread(
             target=self._process_requests_in_background
         )
         self._bg_thread.setDaemon(True)
         self._bg_thread.start()
+
+    def _patch_client_for_gevent(self):
+        try:
+            import gevent
+            import gevent.monkey
+        except ImportError:
+            gevent_enabled = False
+        else:
+            gevent_enabled = bool(gevent.monkey.saved)
+
+        if gevent_enabled:
+            self._Timeout = gevent.Timeout
+            self._sleep = gevent.sleep
+            self._get_value_event = lambda: gevent.event.AsyncResult()
+        else:
+            self._Timeout = ValueEventTimeout
+            self._sleep = lambda _: None
+            self._get_value_event = self._ensure_value_event
+
+    def _ensure_value_event(self):
+        """
+        A ValueEvent object is used by one thread at a time so it can be
+        safely reused instead of creating a new one for each call to reqrep.
+        Creating a ValueEvent is expensive, see it's docstring.
+        """
+        ev = getattr(self._threadlocal, 'event', None)
+        if ev is None:
+            ev = ValueEvent()
+            self._threadlocal.event = ev
+        return ev
 
     def _bg_clean_up_peer(self, peer):
         """Remove peer and associated sockets from _peers and _sock_to_peer.
@@ -464,6 +494,7 @@ class Client(object):
             socks = self._sock_to_peer.keys()
         
         if not socks:
+            self._sleep(0)
             return [], [], []
 
         readable, writable, exceptional = select(socks, socks, socks, timeout)
@@ -531,21 +562,6 @@ class Client(object):
                           (peer.peer_id, peer.socket.getpeername())
                 self._bg_clean_up_peer(peer)
 
-    def _ensure_value_event(self):
-        """A ValueEvent object is used by one thread at a time so it can be
-        safely reused instead of creating a new one for each call to reqrep.
-        This avoids the overhead associated with creating ValueEvent objects,
-        which encapsulate OS semaphores, by instantiating only one for each
-        calling thread.
-
-        @return: ValueEvent
-        """
-        ev = getattr(self._threadlocal, 'event', None)
-        if ev is None:
-            ev = ValueEvent()
-            self._threadlocal.event = ev
-        return ev
-
     def _ensure_connection(self, peer_id, timeout=SOCKET_CREATION_TIMEOUT):
         """Connects to the peer's socket and creates a Peer object.
 
@@ -574,8 +590,8 @@ class Client(object):
     def reqrep(self, peer_id, message, timeout=False):
         """The message is serialized and added to the peer's outgoing buffer
         with an associated request id (add_request). The request id is also used
-        to associate a ValueEvent object with the call in the peer's
-        pending_requests dict such that the background thread,
+        to associate a ValueEvent (or AsyncResult) object with the call in the
+        peer's pending_requests dict such that the background thread,
         _process_requests_in_background, can "respond" to the reqrep call by
         setting the ValueEvent object.
 
@@ -589,13 +605,13 @@ class Client(object):
 
         req_id = self._inc_req_count()
         peer = self._ensure_connection(peer_id)
-        value_event = self._ensure_value_event()
+        value_event = self._get_value_event()
         outgoing_bytes = self._packer.pack([req_id, message])
 
         peer.add_request(req_id, outgoing_bytes, value_event)
         try:
-            status, message = value_event.wait_for_value(timeout)
-        except ValueEventTimeout:
+            status, message = value_event.get(timeout)
+        except self._Timeout:
             status = TIMEOUT
             message = 'request timed out after %s s' % (timeout)
         peer.remove_request(req_id)
