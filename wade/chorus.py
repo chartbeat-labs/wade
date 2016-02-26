@@ -145,7 +145,14 @@ class Node(object):
             return
 
         data = incoming.packer.pack([req_id, status, message])
-        resp_address.write(data)
+        try:
+            resp_address.write(data)
+        except pyuv.error.HandleClosedError:
+            # This can happen if the client prematurely closes the
+            # connection. Though the better thing to do would be to
+            # detect this situation and call a call handler function
+            # to take some action.
+            pass
 
     def _setup_periodics(self):
         for period, C in self._call_handler.get_periodics():
