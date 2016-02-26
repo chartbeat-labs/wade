@@ -565,8 +565,6 @@ class Client(object):
                     peer.outgoing_buffer.commit_read(sent_bytes)
 
             for peer in exceptional:
-                print 'handling exceptional condition for peer %s at %s' % \
-                          (peer.peer_id, peer.socket.getpeername())
                 self._bg_clean_up_peer(peer)
 
     def _ensure_connection(self, peer_id, timeout=SOCKET_CREATION_TIMEOUT):
