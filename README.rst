@@ -22,6 +22,48 @@ much like how a web developer writes business logic that plugs into
 the Django framework.
 
 
+Why Would We Build Such a Thing?
+--------------------------------
+
+You can think of a database as an object that transitions from state
+to state, where the transitions are insert and update commands. SQL
+provides a fairly limited set of mutating commands, typically just
+setting the columns of a row to given values. Redis supports a richer
+set of mutating commands that match common operations on data
+structures.
+
+WADE is a system for replicating an object and its state transitions
+across a set of nodes, and is thus a generalization of a database. The
+key to WADE is that the transitions are completely customizable
+functions. In places where you might have had to use a
+read-write-update cycle with a regular database, you can program WADE
+to perform the update in a single roundtrip.
+
+One example is a priority queue structure in a key-value data
+store. Suppose that an application maps a key to a priority queue of
+items, and expects to be able to add and remove items. If your
+standard database is not expressive enough to implement a priority
+queue, then you might go about doing this by serializing the queue and
+storing it directly in the database as an opaque value. Adding an item
+to the queue would require pulling down the value to the client,
+deserializing, performing the update, reserializing, and then writing
+it back to the database. With WADE, the programmer would directly
+implement the ``add_item`` operation in the database so that a client
+could add items with a single command in a single roundtrip.
+
+Along the same veins, a client might have to pull down the entire
+serialized value and deserialize it to get the size of the
+queue. Whereas with WADE, the ``size`` command would execute directly
+on the node and return only the result, thereby reducing the amount of
+network transfer required to answer a simple query.
+
+The ability to run computations directly on the node without pulling
+down an object's data could be a huge advantage if the size of data is
+large compared to the output of the computation. For instance, you
+could calculate the variance of large number of metrics without high
+network overhead.
+
+
 Design Principles
 -----------------
 
