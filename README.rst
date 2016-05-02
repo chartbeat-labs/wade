@@ -430,3 +430,10 @@ partitions commit as the command exits the chain. This effectively
 merges WADE's prepare/commit phases with RAMP's.
 
 Also, note the TODO.rst file which contains less far-ranging tasks.
+
+
+Authors
+-------
+
+* `Wes Chow <https://github.com/wesc>`_
+* `Adrian Kramer <https://github.com/ackramer>`_
