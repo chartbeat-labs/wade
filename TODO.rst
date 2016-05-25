@@ -1,6 +1,8 @@
 TODO
 ----
 
+- Add timeouts to chain.Client.
+
 - Dogtag stats.
 
 - Implement fast/full sync and read/write pauses.

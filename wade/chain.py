@@ -685,7 +685,7 @@ class Client(object):
 
     def __init__(self, conf, timeout):
         self._conf = conf
-        self._chorus_client = chorus.Client(self._conf['nodes'], timeout)
+        self._chorus_client = chorus.Client(self._conf['nodes'])
         self._peer_ids = self._conf['nodes'].keys()
 
     def close(self):
